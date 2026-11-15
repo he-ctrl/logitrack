@@ -132,11 +132,39 @@ export async function saveAggregates(list) {
 // number|null untuk referensi [Nama Variabel] di dalam rumus (boleh null
 // bila rumus tidak memakai variabel). Kembalian:
 // { values: {..., [idRumus]: number|null}, errors: [{column, error}] }
-export function computeFormulas(columns, values, resolveVar, varNames = []) {
+export function computeFormulas(columns, values, resolveVar, varNames = [], rowCtx = null) {
   const out = { ...values };
   const errors = [];
   const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
   const knownNames = [...columns.map((c) => c.name), ...varNames];
+  // Stok berjalan per barang (fungsi STOK): jumlahkan kolom jumlah untuk
+  // baris yang barangnya sama dengan baris ini dan tanggalnya <= baris ini
+  // (rowCtx.rows sudah urut tanggal). Baris ke-j < index dibaca dari tabel,
+  // baris saat ini dibaca dari `out` (nilai yang sedang dihitung).
+  const running = (qtyName, itemName, dirName) => {
+    if (!rowCtx) throw new Error('STOK hanya bisa dihitung dari data tabel (saat menyimpan baris).');
+    const qtyCol = byName.get(String(qtyName).toLowerCase());
+    const itemCol = byName.get(String(itemName).toLowerCase());
+    const dirCol = dirName ? byName.get(String(dirName).toLowerCase()) : null;
+    if (!qtyCol || !itemCol) return null;
+    const itemVal = String(out[itemCol.id] ?? '').trim().toLowerCase();
+    let sum = 0;
+    for (let j = 0; j <= rowCtx.index; j++) {
+      const rv = j === rowCtx.index ? out : rowCtx.rows[j];
+      if (String(rv[itemCol.id] ?? '').trim().toLowerCase() !== itemVal) continue;
+      const q = Number(rv[qtyCol.id]);
+      if (!Number.isFinite(q)) continue;
+      let sign = 1;
+      if (dirCol) {
+        const d = String(rv[dirCol.id] ?? '').trim().toLowerCase();
+        if (d === 'out' || d === 'keluar') sign = -1;
+        else if (d === 'in' || d === 'masuk') sign = 1;
+        else sign = 0;
+      }
+      sum += sign * q;
+    }
+    return sum;
+  };
   for (const col of columns) {
     if (col.type !== 'rumus') continue;
     if (!col.formula) {
@@ -154,7 +182,7 @@ export function computeFormulas(columns, values, resolveVar, varNames = []) {
         return typeof v === 'number' && Number.isFinite(v) ? v : null;
       }
       return null;
-    }, knownNames);
+    }, knownNames, { running });
     if (res.error) {
       out[col.id] = null;
       errors.push({ column: col.name, error: res.error });
@@ -183,10 +211,16 @@ export function computeVariables(columns, rows, aggregates) {
 // yang saling bergantung ikut terhitung dengan benar.
 export function recomputeAllRows(columns, rows, aggregates) {
   let current = rows.map((r) => ({ ...(r.values || {}) }));
+  // Urutan kronologis (tanggal naik) untuk STOK: stok dihitung dari baris
+  // yang tanggalnya <= baris ini. Loop fixed-point (maks 4x) membuat nilai
+  // STOK konvergen walau kolom jumlahnya sendiri kolom rumus.
+  const order = rows.map((r, i) => i).sort((a, b) => new Date(rows[a].values?.tanggal) - new Date(rows[b].values?.tanggal) || a - b);
+  const posOf = new Map(order.map((idx, p) => [idx, p]));
   for (let iter = 0; iter < 4; iter++) {
     const vars = computeVariables(columns, rows.map((r, i) => ({ ...r, values: current[i] })), aggregates);
-    const next = current.map((values) =>
-      computeFormulas(columns, values, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name)).values
+    const sortedCurrent = order.map((i) => current[i]);
+    const next = current.map((values, i) =>
+      computeFormulas(columns, values, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name), { rows: sortedCurrent, index: posOf.get(i) }).values
     );
     const same = JSON.stringify(next) === JSON.stringify(current);
     current = next;
