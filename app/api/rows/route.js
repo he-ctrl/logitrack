@@ -51,9 +51,9 @@ function cleanBaseValues(columns, input) {
   return values;
 }
 
-function buildValues(columns, input, resolveVar) {
+function buildValues(columns, input, resolveVar, varNames = []) {
   const values = cleanBaseValues(columns, input);
-  const computed = computeFormulas(columns, values, resolveVar);
+  const computed = computeFormulas(columns, values, resolveVar, varNames);
   return computed;
 }
 
@@ -76,7 +76,7 @@ export async function POST(req) {
     const aggregates = await getAggregates();
     const base = cleanBaseValues(columns, input);
     const vars = provisionalVars(columns, rows, base, -1, aggregates);
-    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null);
+    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name));
     const row = { id: `r_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, values: computed.values };
     // Hitung ulang semua baris: kolom rumus yang memakai [Nama Variabel]
     // bergantung pada seluruh tabel, jadi baris lama ikut berubah nilainya.
@@ -103,7 +103,7 @@ export async function PUT(req) {
     const aggregates = await getAggregates();
     const base = cleanBaseValues(columns, input);
     const vars = provisionalVars(columns, rows, base, idx, aggregates);
-    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null);
+    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name));
     const updated = rows.map((r, i) => (i === idx ? { ...r, values: computed.values } : r));
     const newRows = recomputeAllRows(columns, updated, aggregates);
     await saveRows(newRows);
