@@ -51,10 +51,17 @@ function cleanBaseValues(columns, input) {
   return values;
 }
 
-function buildValues(columns, input, resolveVar, varNames = []) {
+function buildValues(columns, input, resolveVar, varNames = [], rowCtx = null) {
   const values = cleanBaseValues(columns, input);
-  const computed = computeFormulas(columns, values, resolveVar, varNames);
+  const computed = computeFormulas(columns, values, resolveVar, varNames, rowCtx);
   return computed;
+}
+
+// Konteks baris untuk STOK: tabel (termasuk baris baru/ubah) diurutkan
+// tanggal naik, plus posisi baris yang sedang disimpan di urutan itu.
+function stokRowCtx(allRows, targetIdx) {
+  const order = allRows.map((r, i) => i).sort((a, b) => new Date(allRows[a].values?.tanggal) - new Date(allRows[b].values?.tanggal) || a - b);
+  return { rows: order.map((i) => allRows[i].values), index: order.indexOf(targetIdx) };
 }
 
 // Variabel untuk tabel setelah baris baru/ubah masuk — dipakai supaya rumus
@@ -76,7 +83,8 @@ export async function POST(req) {
     const aggregates = await getAggregates();
     const base = cleanBaseValues(columns, input);
     const vars = provisionalVars(columns, rows, base, -1, aggregates);
-    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name));
+    const newRowsTmp = [...rows, { id: 'tmp', values: base }];
+    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name), stokRowCtx(newRowsTmp, newRowsTmp.length - 1));
     const row = { id: `r_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, values: computed.values };
     // Hitung ulang semua baris: kolom rumus yang memakai [Nama Variabel]
     // bergantung pada seluruh tabel, jadi baris lama ikut berubah nilainya.
@@ -103,7 +111,8 @@ export async function PUT(req) {
     const aggregates = await getAggregates();
     const base = cleanBaseValues(columns, input);
     const vars = provisionalVars(columns, rows, base, idx, aggregates);
-    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name));
+    const updRowsTmp = rows.map((r, i) => (i === idx ? { ...r, values: base } : r));
+    const computed = buildValues(columns, input, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name), stokRowCtx(updRowsTmp, idx));
     const updated = rows.map((r, i) => (i === idx ? { ...r, values: computed.values } : r));
     const newRows = recomputeAllRows(columns, updated, aggregates);
     await saveRows(newRows);
