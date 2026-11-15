@@ -153,23 +153,34 @@ export function evalFormula(formula, resolve) {
 
 // Validasi rumus saat kolom dibuat/diubah.
 // columns: skema saat ini (tanpa kolom baru). refs harus sudah ada & bertipe angka.
-// Kembalian: { refs: string[] (nama kolom yang dipakai), error: string|null }
-export function validateFormula(formula, columns) {
+// variables: daftar variabel tersimpan — nama variabel juga boleh dipakai
+// sebagai referensi (nilainya angka). Kembalian:
+// { refs: string[] (nama kolom yang dipakai), error: string|null }
+export function validateFormula(formula, columns, variables = []) {
   try {
     if (!formula || !String(formula).trim()) return { refs: [], error: 'Rumus wajib diisi untuk kolom tipe rumus.' };
     const tokens = tokenize(String(formula));
     const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
+    const varByName = new Map((variables || []).map((v) => [String(v.name).toLowerCase(), v]));
     const refs = [];
+    let hasVar = false;
     for (const t of tokens) {
       if (t.type !== 'ref') continue;
       const col = byName.get(t.value.toLowerCase());
-      if (!col) return { refs: [], error: `Kolom "${t.value}" tidak ditemukan. Cek lagi nama kolomnya.` };
-      if (col.type !== 'int' && col.type !== 'double' && col.type !== 'rumus') {
-        return { refs: [], error: `Kolom "${t.value}" bertipe ${col.type} — rumus hanya bisa memakai kolom angka (int/double/rumus).` };
+      if (col) {
+        if (col.type !== 'int' && col.type !== 'double' && col.type !== 'rumus') {
+          return { refs: [], error: `Kolom "${t.value}" bertipe ${col.type} — rumus hanya bisa memakai kolom angka (int/double/rumus).` };
+        }
+        if (!refs.includes(col.name)) refs.push(col.name);
+        continue;
       }
-      if (!refs.includes(col.name)) refs.push(col.name);
+      if (varByName.has(t.value.toLowerCase())) {
+        hasVar = true;
+        continue;
+      }
+      return { refs: [], error: `"${t.value}" tidak ditemukan — bukan kolom maupun variabel. Cek lagi namanya.` };
     }
-    if (refs.length === 0) return { refs: [], error: 'Rumus harus memakai minimal satu kolom, contoh: [Harga] * [Jumlah Barang].' };
+    if (refs.length === 0 && !hasVar) return { refs: [], error: 'Rumus harus memakai minimal satu kolom atau variabel, contoh: [Harga] * [Jumlah Barang].' };
     // Uji hitung dengan nilai dummy 1 untuk menangkap kesalahan sintaks.
     const trial = evalFormula(formula, () => 1);
     if (trial.error) return { refs: [], error: trial.error };
