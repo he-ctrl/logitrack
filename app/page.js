@@ -14,8 +14,27 @@ import {
 
 const COLORS = ['#2e86c1', '#f5a623', '#1e8449', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#2c3e50'];
 
+const VIEWS = [
+  { id: 'ringkasan', label: 'Ringkasan', roles: ['logistik', 'supervisor'] },
+  { id: 'tabel', label: 'Tabel', roles: ['logistik', 'supervisor'] },
+  { id: 'filter', label: 'Filter Data', roles: ['logistik', 'supervisor'] },
+  { id: 'grafik', label: 'Grafik', roles: ['logistik', 'supervisor'] },
+  { id: 'prediksi', label: 'Prediksi', roles: ['logistik', 'supervisor'] },
+  { id: 'input', label: 'Input Data', roles: ['logistik'] },
+  { id: 'kolom', label: 'Kelola Kolom', roles: ['logistik'] },
+];
+
+const isNumeric = (c) => c.type === 'int' || c.type === 'double' || c.type === 'rumus';
+
 function nowInput() {
   const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+function toInput(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 16);
 }
@@ -33,6 +52,7 @@ function fmtTick(iso) {
 }
 
 function fmtNum(v) {
+  if (v === null || v === undefined) return '—';
   if (typeof v === 'number') return v.toLocaleString('id-ID');
   return v ?? '';
 }
@@ -52,20 +72,34 @@ function ChartTooltip({ active, payload, label }) {
 }
 
 export default function Home() {
+  const [me, setMe] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginErr, setLoginErr] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [view, setView] = useState('ringkasan');
+
   const [columns, setColumns] = useState([]);
   const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
 
   const [colName, setColName] = useState('');
   const [colType, setColType] = useState('int');
+  const [formulaText, setFormulaText] = useState('');
   const [colBusy, setColBusy] = useState(false);
   const [delColId, setDelColId] = useState('');
   const [delBusy, setDelBusy] = useState(false);
+  const [editFormulaId, setEditFormulaId] = useState('');
+  const [editFormulaText, setEditFormulaText] = useState('');
+  const [formulaBusy, setFormulaBusy] = useState(false);
 
   const [rowForm, setRowForm] = useState({ tanggal: nowInput() });
   const [rowBusy, setRowBusy] = useState(false);
+  const [editingRow, setEditingRow] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
 
   const [chartX, setChartX] = useState('tanggal');
   const [chartY, setChartY] = useState([]);
@@ -79,10 +113,18 @@ export default function Home() {
   const [predMsg, setPredMsg] = useState('');
   const [predBusy, setPredBusy] = useState(false);
 
-  // Filter kategori (kolom string): dipakai grafik & prediksi.
   const [filters, setFilters] = useState({});
+  const [selected, setSelected] = useState(null);
 
-  const numericCols = useMemo(() => columns.filter((c) => c.type === 'int' || c.type === 'double'), [columns]);
+  const [pwOld, setPwOld] = useState('');
+  const [pwNew, setPwNew] = useState('');
+  const [pwMsg, setPwMsg] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+
+  const isLogistik = me?.role === 'logistik';
+  const numericCols = useMemo(() => columns.filter(isNumeric), [columns]);
+  const formulaCols = useMemo(() => columns.filter((c) => c.type === 'rumus'), [columns]);
+  const visibleViews = VIEWS.filter((v) => !me || v.roles.includes(me.role));
 
   const filterOptions = useCallback((colId) => {
     const vals = new Set();
@@ -94,7 +136,7 @@ export default function Home() {
   }, [rows]);
 
   // Baris yang lolos semua filter yang aktif (berlaku untuk tabel, grafik & prediksi).
-  // string = cocok persis, tanggal = rentang tanggal, int/double = rentang angka.
+  // string = cocok persis, tanggal = rentang tanggal, int/double/rumus = rentang angka.
   const filteredRows = useMemo(() => {
     return rows.filter((r) => {
       for (const [k, f] of Object.entries(filters)) {
@@ -129,6 +171,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/data', { cache: 'no-store' });
       const j = await res.json();
+      if (res.status === 401) { setMe(null); return; }
       if (!res.ok) throw new Error(j.error || 'Gagal memuat data.');
       setColumns(j.columns);
       setRows(j.rows);
@@ -141,7 +184,7 @@ export default function Home() {
         return next;
       });
       setChartY((prev) => {
-        const ids = j.columns.filter((c) => c.type === 'int' || c.type === 'double').map((c) => c.id);
+        const ids = j.columns.filter(isNumeric).map((c) => c.id);
         return prev.filter((id) => ids.includes(id));
       });
       // Buang filter yang nilainya sudah tidak ada di data (string) atau
@@ -168,7 +211,53 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  const checkAuth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth', { cache: 'no-store' });
+      const j = await res.json();
+      if (res.ok) {
+        setMe({ username: j.username, role: j.role });
+        setLoading(true);
+        await loadData();
+      }
+    } catch (e) { /* belum login */ }
+    setAuthChecked(true);
+  }, [loadData]);
+
+  useEffect(() => { checkAuth(); }, [checkAuth]);
+
+  async function login(e) {
+    e.preventDefault();
+    setLoginBusy(true);
+    setLoginErr('');
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: loginUser, password: loginPass }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Login gagal.');
+      setMe({ username: j.username, role: j.role });
+      setLoginPass('');
+      setLoading(true);
+      await loadData();
+    } catch (err) {
+      setLoginErr(err.message);
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function logout() {
+    await fetch('/api/auth', { method: 'DELETE' });
+    setMe(null);
+    setColumns([]);
+    setRows([]);
+    setJob(null);
+    setResult(null);
+    setView('ringkasan');
+  }
 
   // Poll status prediksi selama masih berjalan.
   useEffect(() => {
@@ -195,14 +284,19 @@ export default function Home() {
       const res = await fetch('/api/columns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: colName, type: colType }),
+        body: JSON.stringify({ name: colName, type: colType, formula: colType === 'rumus' ? formulaText : undefined }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menambah kolom.');
       setColumns(j.columns);
       setRows(j.rows);
       setColName('');
-      setMsg(`Kolom "${j.added.name}" (${j.added.type}) ditambahkan. Baris lama diisi ${j.added.type === 'string' ? 'kosong' : '0'}.`);
+      setFormulaText('');
+      setMsg(
+        colType === 'rumus'
+          ? `Kolom rumus "${j.added.name}" ditambahkan (= ${j.added.formula}). Nilainya terhitung otomatis di semua baris.`
+          : `Kolom "${j.added.name}" (${j.added.type}) ditambahkan. Baris lama diisi ${j.added.type === 'string' ? 'kosong' : '0'}.`
+      );
     } catch (err) {
       setMsg(err.message);
     } finally {
@@ -210,33 +304,95 @@ export default function Home() {
     }
   }
 
+  async function simpanRumus(e) {
+    e.preventDefault();
+    if (!editFormulaId) return;
+    setFormulaBusy(true);
+    setMsg('');
+    try {
+      const res = await fetch('/api/columns', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: editFormulaId, formula: editFormulaText }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal mengubah rumus.');
+      setColumns(j.columns);
+      setRows(j.rows);
+      setMsg(`Rumus kolom "${j.updated.name}" diubah dan semua baris dihitung ulang.`);
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setFormulaBusy(false);
+    }
+  }
+
+  function collectRowValues(form) {
+    const values = {};
+    for (const c of columns) {
+      if (c.type === 'tanggal') {
+        values.tanggal = form.tanggal ? new Date(form.tanggal).toISOString() : new Date().toISOString();
+      } else if (c.type !== 'rumus') {
+        values[c.id] = form[c.id] ?? '';
+      }
+    }
+    return values;
+  }
+
   async function tambahRow(e) {
     e.preventDefault();
     setRowBusy(true);
     setMsg('');
     try {
-      const values = {};
-      for (const c of columns) {
-        if (c.type === 'tanggal') {
-          values.tanggal = rowForm.tanggal ? new Date(rowForm.tanggal).toISOString() : new Date().toISOString();
-        } else {
-          values[c.id] = rowForm[c.id] ?? '';
-        }
-      }
       const res = await fetch('/api/rows', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ values }),
+        body: JSON.stringify({ values: collectRowValues(rowForm) }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menambah baris.');
       setRows(j.rows);
       setRowForm((prev) => ({ ...prev, tanggal: nowInput() }));
-      setMsg('Baris masuk ke tabel.');
+      const warn = (j.formulaWarnings || []).map((w) => `${w.column}: ${w.error}`).join('; ');
+      setMsg('Baris masuk ke tabel.' + (warn ? ` Perhatian rumus — ${warn}` : ''));
     } catch (err) {
       setMsg(err.message);
     } finally {
       setRowBusy(false);
+    }
+  }
+
+  function startEdit(row) {
+    const values = {};
+    for (const c of columns) {
+      if (c.type === 'tanggal') values.tanggal = toInput(row.values.tanggal);
+      else if (c.type !== 'rumus') values[c.id] = row.values[c.id] ?? '';
+    }
+    setEditingRow({ id: row.id, values });
+    setMsg('');
+  }
+
+  async function saveEdit(e) {
+    e.preventDefault();
+    if (!editingRow) return;
+    setEditBusy(true);
+    setMsg('');
+    try {
+      const res = await fetch('/api/rows', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: editingRow.id, values: collectRowValues(editingRow.values) }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal mengubah baris.');
+      setRows(j.rows);
+      setEditingRow(null);
+      const warn = (j.formulaWarnings || []).map((w) => `${w.column}: ${w.error}`).join('; ');
+      setMsg('Baris diubah, kolom rumus dihitung ulang.' + (warn ? ` Perhatian rumus — ${warn}` : ''));
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -309,11 +465,11 @@ export default function Home() {
         const dow = d.getDay();
         const weekend = dow === 0 || dow === 6;
         const val = Math.round(110 + (weekend ? -25 : 25) + 18 * Math.sin(i / 2.2) + (i % 3) * 7);
-        // Kirim SEMUA kolom (angka lain = 0, string = kosong) — API menolak
-        // baris kalau ada kolom int/double yang tidak dikirim.
+        // Kirim SEMUA kolom biasa (angka lain = 0, string = kosong).
+        // Kolom rumus tidak dikirim — server yang menghitungnya.
         const values = { tanggal: d.toISOString() };
         for (const c of cols) {
-          if (c.type === 'tanggal') continue;
+          if (c.type === 'tanggal' || c.type === 'rumus') continue;
           values[c.id] = c.id === jumlahId ? val : (c.type === 'string' ? '' : 0);
         }
         await fetch('/api/rows', {
@@ -357,11 +513,27 @@ export default function Home() {
     }
   }
 
-  const sortedRows = useMemo(() => {
-    const copy = [...rows];
-    copy.sort((a, b) => new Date(a.values.tanggal) - new Date(b.values.tanggal));
-    return copy;
-  }, [rows]);
+  async function gantiPassword(e) {
+    e.preventDefault();
+    setPwBusy(true);
+    setPwMsg('');
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oldPassword: pwOld, newPassword: pwNew }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal mengganti password.');
+      setPwOld('');
+      setPwNew('');
+      setPwMsg('Password berhasil diganti.');
+    } catch (err) {
+      setPwMsg(err.message);
+    } finally {
+      setPwBusy(false);
+    }
+  }
 
   const chartData = useMemo(() => {
     if (chartY.length === 0) return [];
@@ -409,8 +581,6 @@ export default function Home() {
   }
 
   // Titik yang diklik di grafik — ditampilkan sebagai kotak detail di bawah grafik.
-  const [selected, setSelected] = useState(null);
-
   function handlePointClick(state, chart) {
     if (!state || !state.activePayload || state.activePayload.length === 0) return;
     const first = state.activePayload[0].payload;
@@ -451,7 +621,7 @@ export default function Home() {
   }
 
   // Kontrol filter per kolom: string = dropdown nilai unik, tanggal = rentang
-  // tanggal, int/double = rentang angka.
+  // tanggal, int/double/rumus = rentang angka.
   function filterControl(c) {
     const f = filters[c.id];
     if (c.type === 'string') {
@@ -534,12 +704,121 @@ export default function Home() {
     return `${name} ${parts.join(' ')}`;
   }
 
+  // Input untuk satu kolom di form baris (tambah & edit). Kolom rumus tidak
+  // diinput — nilainya terhitung otomatis, jadi ditampilkan sebagai info.
+  function rowField(c, form, setForm) {
+    if (c.type === 'rumus') {
+      return (
+        <div className="field" key={c.id}>
+          <label>{c.name} <span className="type">(rumus — otomatis)</span></label>
+          <input type="text" value={c.formula || ''} disabled title="Terhitung otomatis dari rumus" />
+        </div>
+      );
+    }
+    if (c.type === 'tanggal') {
+      return (
+        <div className="field" key={c.id}>
+          <label>{c.name} <span className="type">({c.type})</span></label>
+          <input
+            type="datetime-local"
+            value={form.tanggal || ''}
+            onChange={(e) => setForm((p) => ({ ...p, tanggal: e.target.value }))}
+          />
+        </div>
+      );
+    }
+    if (c.type === 'string') {
+      return (
+        <div className="field" key={c.id}>
+          <label>{c.name} <span className="type">({c.type})</span></label>
+          <input
+            type="text"
+            value={form[c.id] ?? ''}
+            onChange={(e) => setForm((p) => ({ ...p, [c.id]: e.target.value }))}
+            placeholder="teks"
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="field" key={c.id}>
+        <label>{c.name} <span className="type">({c.type})</span></label>
+        <input
+          type="number"
+          step={c.type === 'int' ? 1 : 'any'}
+          value={form[c.id] ?? ''}
+          onChange={(e) => setForm((p) => ({ ...p, [c.id]: e.target.value }))}
+          placeholder="0"
+        />
+      </div>
+    );
+  }
+
+  function cellValue(c, r) {
+    if (c.type === 'tanggal') return fmtDate(r.values.tanggal);
+    if (c.type === 'string') return r.values[c.id] ?? '';
+    return fmtNum(r.values[c.id]);
+  }
+
+  if (!authChecked) {
+    return (
+      <>
+        <header className="topbar"><h1>Logi<span>Track</span></h1></header>
+        <main><div className="card"><p className="empty">Memuat…</p></div></main>
+      </>
+    );
+  }
+
+  if (!me) {
+    return (
+      <>
+        <header className="topbar">
+          <h1>Logi<span>Track</span></h1>
+          <p>Dashboard pelacakan logistik — tabel dinamis, grafik &amp; prediksi TimesFM</p>
+        </header>
+        <main>
+          <div className="card loginwrap">
+            <h2>Masuk</h2>
+            <p className="sub">Login untuk membuka dashboard. Role logistik bisa memakai semua fitur; supervisor hanya tabel, filter, grafik, dan prediksi.</p>
+            <form onSubmit={login}>
+              <div className="field" style={{ marginBottom: 10 }}>
+                <label>Username</label>
+                <input value={loginUser} onChange={(e) => setLoginUser(e.target.value)} placeholder="logistik / supervisor" autoComplete="username" />
+              </div>
+              <div className="field" style={{ marginBottom: 14 }}>
+                <label>Password</label>
+                <input type="password" value={loginPass} onChange={(e) => setLoginPass(e.target.value)} placeholder="password" autoComplete="current-password" />
+              </div>
+              <button type="submit" className="primary" disabled={loginBusy} style={{ width: '100%' }}>
+                {loginBusy ? 'Memeriksa…' : 'Masuk'}
+              </button>
+            </form>
+            {loginErr && <p className="msg err">{loginErr}</p>}
+            <p className="legend" style={{ marginTop: 14 }}>
+              Akun awal — logistik / logistik123 · supervisor / supervisor123. Segera ganti password setelah masuk (menu Ringkasan → Ganti Password).
+            </p>
+          </div>
+        </main>
+      </>
+    );
+  }
+
   return (
     <>
       <header className="topbar">
         <h1>Logi<span>Track</span></h1>
         <p>Dashboard pelacakan logistik — tabel dinamis, grafik &amp; prediksi TimesFM</p>
       </header>
+      <nav className="navbar">
+        {visibleViews.map((v) => (
+          <button key={v.id} className={view === v.id ? 'active' : ''} onClick={() => setView(v.id)}>
+            {v.label}
+          </button>
+        ))}
+        <span className="spacer" />
+        <span className="who"><b>{me.username}</b> · {me.role}</span>
+        <button onClick={logout}>Keluar</button>
+      </nav>
       <main>
         {loading && <div className="card"><p className="empty">Memuat data…</p></div>}
         {error && (
@@ -550,315 +829,414 @@ export default function Home() {
         )}
         {!loading && !error && (
           <>
-            <div className="card">
-              <h2>Ringkasan</h2>
-              <p className="sub">Kolom tanggal/waktu adalah feature (sumbu waktu). Kolom angka (int/double) adalah label yang bisa digrafik dan diprediksi. Semua kolom bisa difilter: tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai.</p>
-              <span className="pill">{columns.length} kolom</span>{' '}
-              <span className="pill">{rows.length} baris</span>{' '}
-              {job && <span className={`pill ${job.status === 'done' ? 'ok' : job.status === 'error' ? 'err' : 'warn'}`}>Prediksi: {job.status}</span>}
-            </div>
-
-            <div className="card">
-              <h2>Filter Data</h2>
-              <p className="sub">Filter berlaku untuk tabel, grafik, dan prediksi. Tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai dari kolom.</p>
-              {columns.length === 0 ? (
-                <p className="empty">Belum ada kolom.</p>
-              ) : (
-                <div className="row">
-                  {columns.map((c) => filterControl(c))}
+            {view === 'ringkasan' && (
+              <>
+                <div className="card">
+                  <h2>Ringkasan</h2>
+                  <p className="sub">Kolom tanggal/waktu adalah feature (sumbu waktu). Kolom angka (int/double/rumus) adalah label yang bisa digrafik dan diprediksi. Semua kolom bisa difilter: tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai.</p>
+                  <span className="pill">{columns.length} kolom</span>{' '}
+                  <span className="pill">{rows.length} baris</span>{' '}
+                  {formulaCols.length > 0 && <span className="pill">{formulaCols.length} kolom rumus</span>}{' '}
+                  {job && <span className={`pill ${job.status === 'done' ? 'ok' : job.status === 'error' ? 'err' : 'warn'}`}>Prediksi: {job.status}</span>}
+                  <p className="legend" style={{ marginTop: 12 }}>
+                    Kamu masuk sebagai <b>{me.username}</b> (role <b>{me.role}</b>).
+                    {isLogistik
+                      ? ' Role logistik bisa memakai semua fitur: input & edit baris, kelola kolom, rumus, filter, grafik, dan prediksi.'
+                      : ' Role supervisor hanya bisa melihat tabel, filter data, grafik, dan prediksi — tidak bisa menambah, mengubah, atau menghapus data.'}
+                  </p>
                 </div>
-              )}
-              <div className="row" style={{ marginTop: 12 }}>
-                <button className="ghost" onClick={() => setFilters({})} disabled={Object.keys(filters).length === 0}>Reset filter</button>
-                <span className="legend">Menampilkan {filteredRows.length} dari {rows.length} baris.</span>
-              </div>
-            </div>
-
-            <div className="card">
-              <h2>Tabel Data</h2>
-              <p className="sub">Baris terbaru ada di bawah. Tambah kolom baru: baris lama otomatis terisi 0 (int/double) atau kosong (string).</p>
-              {rows.length === 0 ? (
-                <p className="empty">Belum ada baris. Tambahkan lewat form di bawah, atau isi data contoh untuk mencoba grafik &amp; prediksi.</p>
-              ) : sortedFilteredRows.length === 0 ? (
-                <p className="empty">Tidak ada baris yang cocok dengan filter. Ubah atau reset filter di atas.</p>
-              ) : (
-                <div className="tablewrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        {columns.map((c) => (
-                          <th key={c.id} className={c.type === 'int' || c.type === 'double' ? 'num' : ''}>
-                            {c.name} <span style={{ fontWeight: 400 }}>({c.type})</span>
-                            {c.type !== 'tanggal' && (
-                              <button
-                                className="danger"
-                                style={{ marginLeft: 8, padding: '2px 8px', fontSize: 12 }}
-                                onClick={() => hapusKolom(c)}
-                                title={`Hapus kolom ${c.name}`}
-                              >
-                                Hapus
-                              </button>
-                            )}
-                          </th>
-                        ))}
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sortedFilteredRows.map((r) => (
-                        <tr key={r.id}>
-                          {columns.map((c) => (
-                            <td key={c.id} className={c.type === 'int' || c.type === 'double' ? 'num' : ''}>
-                              {c.type === 'tanggal' ? fmtDate(r.values.tanggal) : c.type === 'string' ? (r.values[c.id] ?? '') : fmtNum(r.values[c.id])}
-                            </td>
-                          ))}
-                          <td><button className="danger" onClick={() => hapusRow(r.id)}>Hapus</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div style={{ marginTop: 12 }} className="row">
-                <button className="ghost" onClick={isiContoh} disabled={sampleBusy}>
-                  {sampleBusy ? 'Mengisi…' : 'Isi data contoh (14 hari)'}
-                </button>
-                <button className="ghost" onClick={loadData}>Muat ulang</button>
-              </div>
-            </div>
-
-            <div className="card">
-              <h2>Tambah Kolom</h2>
-              <p className="sub">Kolom baru langsung muncul di tabel paling atas dan di form tambah baris.</p>
-              <form onSubmit={tambahKolom} className="row">
-                <div className="field">
-                  <label>Nama kolom</label>
-                  <input value={colName} onChange={(e) => setColName(e.target.value)} placeholder="mis. Jumlah Barang" />
-                </div>
-                <div className="field" style={{ flex: '0 0 160px' }}>
-                  <label>Tipe data</label>
-                  <select value={colType} onChange={(e) => setColType(e.target.value)}>
-                    <option value="int">int (bilangan bulat)</option>
-                    <option value="double">double (desimal)</option>
-                    <option value="string">string (teks)</option>
-                  </select>
-                </div>
-                <button type="submit" disabled={colBusy}>{colBusy ? 'Menambah…' : 'Tambah kolom'}</button>
-              </form>
-              <div style={{ marginTop: 14 }}>
-                <p className="sub" style={{ marginBottom: 6 }}>Hapus kolom — kolom Tanggal tidak bisa dihapus. Data di kolom yang dihapus ikut terhapus.</p>
-                <div className="row">
-                  <div className="field" style={{ flex: '0 0 240px' }}>
-                    <select value={delColId} onChange={(e) => setDelColId(e.target.value)}>
-                      <option value="">Pilih kolom…</option>
-                      {columns.filter((c) => c.type !== 'tanggal').map((c) => (
-                        <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
-                      ))}
-                    </select>
-                  </div>
-                  <button
-                    className="danger"
-                    style={{ padding: '10px 18px', fontSize: 14 }}
-                    disabled={!delColId || delBusy}
-                    onClick={() => {
-                      const col = columns.find((c) => c.id === delColId);
-                      if (col) hapusKolom(col);
-                    }}
-                  >
-                    {delBusy ? 'Menghapus…' : 'Hapus kolom'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="card">
-              <h2>Tambah Baris</h2>
-              <p className="sub">Tanggal defaultnya tanggal &amp; jam sekarang — bisa diubah. Klik Masukan, data langsung masuk ke tabel.</p>
-              <form onSubmit={tambahRow} className="row">
-                {columns.map((c) => (
-                  <div className="field" key={c.id}>
-                    <label>{c.name} <span className="type">({c.type})</span></label>
-                    {c.type === 'tanggal' ? (
-                      <input
-                        type="datetime-local"
-                        value={rowForm.tanggal || ''}
-                        onChange={(e) => setRowForm((p) => ({ ...p, tanggal: e.target.value }))}
-                      />
-                    ) : c.type === 'string' ? (
-                      <input
-                        type="text"
-                        value={rowForm[c.id] ?? ''}
-                        onChange={(e) => setRowForm((p) => ({ ...p, [c.id]: e.target.value }))}
-                        placeholder="teks"
-                      />
-                    ) : (
-                      <input
-                        type="number"
-                        step={c.type === 'int' ? 1 : 'any'}
-                        value={rowForm[c.id] ?? ''}
-                        onChange={(e) => setRowForm((p) => ({ ...p, [c.id]: e.target.value }))}
-                        placeholder="0"
-                      />
-                    )}
-                  </div>
-                ))}
-                <button type="submit" className="primary" disabled={rowBusy}>{rowBusy ? 'Memasukkan…' : 'Masukan'}</button>
-              </form>
-              {msg && <p className="msg">{msg}</p>}
-            </div>
-
-            <div className="card">
-              <h2>Grafik</h2>
-              <p className="sub">Pilih sumbu X dan kolom Y yang mau ditampilkan. Bisa juga plot semua kolom angka sekaligus dengan X = tanggal. Klik titik di grafik untuk melihat detail tanggal &amp; jam dan nilainya.</p>
-              <div className="row">
-                <div className="field" style={{ flex: '0 0 200px' }}>
-                  <label>Sumbu X</label>
-                  <select value={chartX} onChange={(e) => setChartX(e.target.value)}>
-                    <option value="tanggal">Tanggal</option>
-                    {numericCols.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label>Sumbu Y (kolom angka)</label>
-                  <div className="checks">
-                    {numericCols.length === 0 && <span className="legend">Belum ada kolom angka.</span>}
-                    {numericCols.map((c) => (
-                      <label key={c.id}>
-                        <input type="checkbox" checked={chartY.includes(c.id)} onChange={() => toggleY(c.id)} />
-                        {c.name}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <button className="ghost" onClick={() => setChartY(numericCols.map((c) => c.id))} disabled={numericCols.length === 0}>
-                  Semua kolom
-                </button>
-              </div>
-              {chartData.length === 0 ? (
-                <p className="empty">Pilih minimal satu kolom Y untuk menampilkan grafik.</p>
-              ) : (
-                <div style={{ height: 320, marginTop: 12 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'main')}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="x" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} />
-                      <Tooltip content={<ChartTooltip />} />
-                      <Legend />
-                      {chartY.map((id, i) => (
-                        <Line
-                          key={id}
-                          type="monotone"
-                          dataKey={id}
-                          name={columns.find((c) => c.id === id)?.name || id}
-                          stroke={COLORS[i % COLORS.length]}
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      ))}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-              {selectedBox('main')}
-            </div>
-
-            <div className="card">
-              <h2>Prediksi ke Depan (TimesFM)</h2>
-              <p className="sub">Feature: kolom tanggal/waktu. Label: kolom angka yang dipilih. Atur mau berapa data ke depan yang diprediksi.</p>
-              <form onSubmit={jalankanPrediksi} className="row">
-                <div className="field" style={{ flex: '0 0 220px' }}>
-                  <label>Kolom yang diprediksi</label>
-                  <select value={predScope} onChange={(e) => setPredScope(e.target.value)}>
-                    <option value="all">Semua kolom angka</option>
-                    <option value="pick">Pilih kolom…</option>
-                  </select>
-                </div>
-                {predScope === 'pick' && (
-                  <div className="field">
-                    <label>Pilih kolom</label>
-                    <div className="checks">
-                      {numericCols.map((c) => (
-                        <label key={c.id}>
-                          <input
-                            type="checkbox"
-                            checked={predCols.includes(c.id)}
-                            onChange={() => setPredCols((p) => (p.includes(c.id) ? p.filter((x) => x !== c.id) : [...p, c.id]))}
-                          />
-                          {c.name}
-                        </label>
-                      ))}
+                <div className="card">
+                  <h2>Ganti Password</h2>
+                  <p className="sub">Ganti password akun kamu sendiri (minimal 6 karakter).</p>
+                  <form onSubmit={gantiPassword} className="row">
+                    <div className="field" style={{ flex: '0 0 200px' }}>
+                      <label>Password lama</label>
+                      <input type="password" value={pwOld} onChange={(e) => setPwOld(e.target.value)} autoComplete="current-password" />
                     </div>
-                  </div>
-                )}
-                <div className="field" style={{ flex: '0 0 140px' }}>
-                  <label>Jumlah prediksi</label>
-                  <input type="number" min={1} max={60} value={horizon} onChange={(e) => setHorizon(e.target.value)} />
+                    <div className="field" style={{ flex: '0 0 200px' }}>
+                      <label>Password baru</label>
+                      <input type="password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} autoComplete="new-password" />
+                    </div>
+                    <button type="submit" disabled={pwBusy}>{pwBusy ? 'Menyimpan…' : 'Simpan password baru'}</button>
+                  </form>
+                  {pwMsg && <p className="msg">{pwMsg}</p>}
                 </div>
-                <button type="submit" className="primary" disabled={predBusy || numericCols.length === 0}>
-                  {predBusy ? 'Mengirim…' : 'Jalankan prediksi'}
-                </button>
-              </form>
-              {predMsg && <p className="msg">{predMsg}</p>}
-              {job && job.status === 'error' && <p className="msg err">{job.error}</p>}
-              {result && predColIds.length === 0 && (
-                <p className="legend">Hasil prediksi ini memakai kolom yang sudah dihapus — jalankan prediksi lagi.</p>
-              )}
-              {result && predColIds.length > 0 && (
-                <>
-                  {result.meta?.warning && <p className="msg">{result.meta.warning}</p>}
-                  {Object.keys(result.meta?.skipped || {}).length > 0 && (
-                    <p className="legend">Dilewati: {Object.entries(result.meta.skipped).map(([k, v]) => `${columns.find((c) => c.id === k)?.name || k} (${v})`).join('; ')}</p>
-                  )}
-                  <div style={{ height: 320, marginTop: 12 }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={forecastChart} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'forecast')}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="t" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <Tooltip content={<ChartTooltip />} />
-                        <Legend />
-                        {predColIds.map((id, i) => (
-                          <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
-                        ))}
-                        {predColIds.map((id, i) => (
-                          <Line key={`${id}_pred`} type="monotone" dataKey={`${id}_pred`} name={`${columns.find((c) => c.id === id)?.name || id} (prediksi)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />
-                        ))}
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                  {selectedBox('forecast')}
-                  <div className="tablewrap" style={{ marginTop: 12 }}>
+              </>
+            )}
+
+            {view === 'tabel' && (
+              <div className="card">
+                <h2>Tabel Data</h2>
+                <p className="sub">
+                  {isLogistik
+                    ? 'Klik Edit untuk mengubah baris (kolom rumus ikut dihitung ulang), Hapus untuk menghapus baris. Tambah kolom baru: baris lama otomatis terisi 0 (int/double) atau kosong (string).'
+                    : 'Mode baca saja untuk supervisor — tabel ini tidak bisa diubah.'}
+                </p>
+                {editingRow && (
+                  <form onSubmit={saveEdit} className="card" style={{ background: '#f7f9fb', marginBottom: 14 }}>
+                    <h2 style={{ fontSize: 16 }}>Edit Baris</h2>
+                    <div className="row">
+                      {columns.map((c) => rowField(c, editingRow.values, (updater) => setEditingRow((prev) => ({ ...prev, values: typeof updater === 'function' ? updater(prev.values) : updater }))))}
+                    </div>
+                    <div className="row" style={{ marginTop: 12 }}>
+                      <button type="submit" className="primary" disabled={editBusy}>{editBusy ? 'Menyimpan…' : 'Simpan perubahan'}</button>
+                      <button type="button" className="ghost" onClick={() => setEditingRow(null)}>Batal</button>
+                    </div>
+                  </form>
+                )}
+                {rows.length === 0 ? (
+                  <p className="empty">Belum ada baris. {isLogistik ? 'Tambahkan lewat menu Input Data, atau isi data contoh untuk mencoba grafik & prediksi.' : ''}</p>
+                ) : sortedFilteredRows.length === 0 ? (
+                  <p className="empty">Tidak ada baris yang cocok dengan filter. Ubah atau reset filter di menu Filter Data.</p>
+                ) : (
+                  <div className="tablewrap">
                     <table>
                       <thead>
                         <tr>
-                          <th>Tanggal prediksi</th>
-                          {predColIds.map((id) => (
-                            <th key={id} className="num">{columns.find((c) => c.id === id)?.name || id}</th>
+                          {columns.map((c) => (
+                            <th key={c.id} className={isNumeric(c) ? 'num' : ''}>
+                              {c.name} <span style={{ fontWeight: 400 }}>({c.type}{c.type === 'rumus' ? ` = ${c.formula}` : ''})</span>
+                              {isLogistik && c.type !== 'tanggal' && (
+                                <button
+                                  className="danger"
+                                  style={{ marginLeft: 8, padding: '2px 8px', fontSize: 12 }}
+                                  onClick={() => hapusKolom(c)}
+                                  title={`Hapus kolom ${c.name}`}
+                                >
+                                  Hapus
+                                </button>
+                              )}
+                            </th>
                           ))}
+                          {isLogistik && <th></th>}
                         </tr>
                       </thead>
                       <tbody>
-                        {result.columns[predColIds[0]].dates.map((iso, i) => (
-                          <tr key={iso}>
-                            <td>{fmtDate(iso)}</td>
-                            {predColIds.map((id) => (
-                              <td key={id} className="num">{fmtNum(result.columns[id].values[i])}</td>
+                        {sortedFilteredRows.map((r) => (
+                          <tr key={r.id}>
+                            {columns.map((c) => (
+                              <td key={c.id} className={isNumeric(c) ? 'num' : ''}>{cellValue(c, r)}</td>
                             ))}
+                            {isLogistik && (
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                <button className="ghost" style={{ padding: '4px 10px', fontSize: 13, marginRight: 6 }} onClick={() => startEdit(r)}>Edit</button>
+                                <button className="danger" onClick={() => hapusRow(r.id)}>Hapus</button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                  <p className="legend">Diprediksi {result.at ? `pada ${fmtDate(result.at)}` : ''} · {result.meta?.rows_used} baris dipakai{result.meta?.rows_total ? ` dari ${result.meta.rows_total}` : ''} · garis putus-putus = prediksi.</p>
-                  {result.meta?.filters && Object.keys(result.meta.filters).length > 0 && (
-                    <p className="legend">Filter: {Object.entries(result.meta.filters).map(([k, v]) => fmtFilter(k, v)).join('; ')}</p>
+                )}
+                <div style={{ marginTop: 12 }} className="row">
+                  <button className="ghost" onClick={loadData}>Muat ulang</button>
+                  <span className="legend">Menampilkan {sortedFilteredRows.length} dari {rows.length} baris (filter aktif dari menu Filter Data).</span>
+                </div>
+                {msg && <p className="msg">{msg}</p>}
+              </div>
+            )}
+
+            {view === 'filter' && (
+              <div className="card">
+                <h2>Filter Data</h2>
+                <p className="sub">Filter berlaku untuk tabel, grafik, dan prediksi. Tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai dari kolom.</p>
+                {columns.length === 0 ? (
+                  <p className="empty">Belum ada kolom.</p>
+                ) : (
+                  <div className="row">
+                    {columns.map((c) => filterControl(c))}
+                  </div>
+                )}
+                <div className="row" style={{ marginTop: 12 }}>
+                  <button className="ghost" onClick={() => setFilters({})} disabled={Object.keys(filters).length === 0}>Reset filter</button>
+                  <span className="legend">Menampilkan {filteredRows.length} dari {rows.length} baris.</span>
+                </div>
+              </div>
+            )}
+
+            {view === 'grafik' && (
+              <div className="card">
+                <h2>Grafik</h2>
+                <p className="sub">Pilih sumbu X dan kolom Y yang mau ditampilkan. Bisa juga plot semua kolom angka sekaligus dengan X = tanggal. Klik titik di grafik untuk melihat detail tanggal &amp; jam dan nilainya.</p>
+                <div className="row">
+                  <div className="field" style={{ flex: '0 0 200px' }}>
+                    <label>Sumbu X</label>
+                    <select value={chartX} onChange={(e) => setChartX(e.target.value)}>
+                      <option value="tanggal">Tanggal</option>
+                      {numericCols.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Sumbu Y (kolom angka)</label>
+                    <div className="checks">
+                      {numericCols.length === 0 && <span className="legend">Belum ada kolom angka.</span>}
+                      {numericCols.map((c) => (
+                        <label key={c.id}>
+                          <input type="checkbox" checked={chartY.includes(c.id)} onChange={() => toggleY(c.id)} />
+                          {c.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <button className="ghost" onClick={() => setChartY(numericCols.map((c) => c.id))} disabled={numericCols.length === 0}>
+                    Semua kolom
+                  </button>
+                </div>
+                {chartData.length === 0 ? (
+                  <p className="empty">Pilih minimal satu kolom Y untuk menampilkan grafik.</p>
+                ) : (
+                  <div style={{ height: 320, marginTop: 12 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'main')}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="x" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <Tooltip content={<ChartTooltip />} />
+                        <Legend />
+                        {chartY.map((id, i) => (
+                          <Line
+                            key={id}
+                            type="monotone"
+                            dataKey={id}
+                            name={columns.find((c) => c.id === id)?.name || id}
+                            stroke={COLORS[i % COLORS.length]}
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+                {selectedBox('main')}
+              </div>
+            )}
+
+            {view === 'prediksi' && (
+              <div className="card">
+                <h2>Prediksi ke Depan (TimesFM)</h2>
+                <p className="sub">Feature: kolom tanggal/waktu. Label: kolom angka yang dipilih. Atur mau berapa data ke depan yang diprediksi.</p>
+                <form onSubmit={jalankanPrediksi} className="row">
+                  <div className="field" style={{ flex: '0 0 220px' }}>
+                    <label>Kolom yang diprediksi</label>
+                    <select value={predScope} onChange={(e) => setPredScope(e.target.value)}>
+                      <option value="all">Semua kolom angka</option>
+                      <option value="pick">Pilih kolom…</option>
+                    </select>
+                  </div>
+                  {predScope === 'pick' && (
+                    <div className="field">
+                      <label>Pilih kolom</label>
+                      <div className="checks">
+                        {numericCols.map((c) => (
+                          <label key={c.id}>
+                            <input
+                              type="checkbox"
+                              checked={predCols.includes(c.id)}
+                              onChange={() => setPredCols((p) => (p.includes(c.id) ? p.filter((x) => x !== c.id) : [...p, c.id]))}
+                            />
+                            {c.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
                   )}
-                </>
-              )}
-            </div>
+                  <div className="field" style={{ flex: '0 0 140px' }}>
+                    <label>Jumlah prediksi</label>
+                    <input type="number" min={1} max={60} value={horizon} onChange={(e) => setHorizon(e.target.value)} />
+                  </div>
+                  <button type="submit" className="primary" disabled={predBusy || numericCols.length === 0}>
+                    {predBusy ? 'Mengirim…' : 'Jalankan prediksi'}
+                  </button>
+                </form>
+                {predMsg && <p className="msg">{predMsg}</p>}
+                {job && job.status === 'error' && <p className="msg err">{job.error}</p>}
+                {result && predColIds.length === 0 && (
+                  <p className="legend">Hasil prediksi ini memakai kolom yang sudah dihapus — jalankan prediksi lagi.</p>
+                )}
+                {result && predColIds.length > 0 && (
+                  <>
+                    {result.meta?.warning && <p className="msg">{result.meta.warning}</p>}
+                    {Object.keys(result.meta?.skipped || {}).length > 0 && (
+                      <p className="legend">Dilewati: {Object.entries(result.meta.skipped).map(([k, v]) => `${columns.find((c) => c.id === k)?.name || k} (${v})`).join('; ')}</p>
+                    )}
+                    <div style={{ height: 320, marginTop: 12 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={forecastChart} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'forecast')}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="t" tick={{ fontSize: 12 }} />
+                          <YAxis tick={{ fontSize: 12 }} />
+                          <Tooltip content={<ChartTooltip />} />
+                          <Legend />
+                          {predColIds.map((id, i) => (
+                            <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                          ))}
+                          {predColIds.map((id, i) => (
+                            <Line key={`${id}_pred`} type="monotone" dataKey={`${id}_pred`} name={`${columns.find((c) => c.id === id)?.name || id} (prediksi)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {selectedBox('forecast')}
+                    <div className="tablewrap" style={{ marginTop: 12 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Tanggal prediksi</th>
+                            {predColIds.map((id) => (
+                              <th key={id} className="num">{columns.find((c) => c.id === id)?.name || id}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.columns[predColIds[0]].dates.map((iso, i) => (
+                            <tr key={iso}>
+                              <td>{fmtDate(iso)}</td>
+                              {predColIds.map((id) => (
+                                <td key={id} className="num">{fmtNum(result.columns[id].values[i])}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="legend">Diprediksi {result.at ? `pada ${fmtDate(result.at)}` : ''} · {result.meta?.rows_used} baris dipakai{result.meta?.rows_total ? ` dari ${result.meta.rows_total}` : ''} · garis putus-putus = prediksi.</p>
+                    {result.meta?.filters && Object.keys(result.meta.filters).length > 0 && (
+                      <p className="legend">Filter: {Object.entries(result.meta.filters).map(([k, v]) => fmtFilter(k, v)).join('; ')}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {view === 'input' && isLogistik && (
+              <div className="card">
+                <h2>Tambah Baris</h2>
+                <p className="sub">Tanggal defaultnya tanggal &amp; jam sekarang — bisa diubah. Klik Masukan, data langsung masuk ke tabel. Kolom rumus terisi otomatis dari rumusnya, tidak perlu diisi.</p>
+                <form onSubmit={tambahRow} className="row">
+                  {columns.map((c) => rowField(c, rowForm, setRowForm))}
+                  <button type="submit" className="primary" disabled={rowBusy}>{rowBusy ? 'Memasukkan…' : 'Masukan'}</button>
+                </form>
+                {msg && <p className="msg">{msg}</p>}
+                <div style={{ marginTop: 16 }}>
+                  <button className="ghost" onClick={isiContoh} disabled={sampleBusy}>
+                    {sampleBusy ? 'Mengisi…' : 'Isi data contoh (14 hari)'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {view === 'kolom' && isLogistik && (
+              <>
+                <div className="card">
+                  <h2>Tambah Kolom</h2>
+                  <p className="sub">Kolom baru langsung muncul di tabel dan di form tambah baris. Tipe rumus: nilainya dihitung otomatis dari kolom lain setiap kali baris ditambah atau diubah.</p>
+                  <form onSubmit={tambahKolom} className="row">
+                    <div className="field">
+                      <label>Nama kolom</label>
+                      <input value={colName} onChange={(e) => setColName(e.target.value)} placeholder="mis. Total" />
+                    </div>
+                    <div className="field" style={{ flex: '0 0 180px' }}>
+                      <label>Tipe data</label>
+                      <select value={colType} onChange={(e) => setColType(e.target.value)}>
+                        <option value="int">int (bilangan bulat)</option>
+                        <option value="double">double (desimal)</option>
+                        <option value="string">string (teks)</option>
+                        <option value="rumus">rumus (hitung otomatis)</option>
+                      </select>
+                    </div>
+                    <button type="submit" disabled={colBusy}>{colBusy ? 'Menambah…' : 'Tambah kolom'}</button>
+                  </form>
+                  {colType === 'rumus' && (
+                    <div style={{ marginTop: 14 }}>
+                      <div className="field">
+                        <label>Rumus (PEMDAS: ^ lalu * / % lalu + -; pakai tanda kurung bila perlu)</label>
+                        <input
+                          value={formulaText}
+                          onChange={(e) => setFormulaText(e.target.value)}
+                          placeholder="[Harga] * [Jumlah Barang]"
+                        />
+                      </div>
+                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus:</p>
+                      <div>
+                        {numericCols.map((c) => (
+                          <button key={c.id} type="button" className="chip" onClick={() => setFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
+                        ))}
+                        {numericCols.length === 0 && <span className="legend">Belum ada kolom angka — buat dulu kolom int/double.</span>}
+                      </div>
+                      <p className="legend">Contoh: kolom Total dari Harga dikali Jumlah Barang → <b>[Harga] * [Jumlah Barang]</b>. Operator yang bisa dipakai: + − * / % ^ dan ( ).</p>
+                    </div>
+                  )}
+                  {msg && <p className="msg">{msg}</p>}
+                </div>
+
+                {formulaCols.length > 0 && (
+                  <div className="card">
+                    <h2>Ubah Rumus</h2>
+                    <p className="sub">Ubah rumus kolom yang sudah ada — semua baris langsung dihitung ulang.</p>
+                    <form onSubmit={simpanRumus} className="row">
+                      <div className="field" style={{ flex: '0 0 200px' }}>
+                        <label>Kolom rumus</label>
+                        <select
+                          value={editFormulaId}
+                          onChange={(e) => {
+                            setEditFormulaId(e.target.value);
+                            const c = formulaCols.find((x) => x.id === e.target.value);
+                            setEditFormulaText(c?.formula || '');
+                          }}
+                        >
+                          <option value="">Pilih kolom…</option>
+                          {formulaCols.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label>Rumus baru</label>
+                        <input value={editFormulaText} onChange={(e) => setEditFormulaText(e.target.value)} placeholder="[Harga] * [Jumlah Barang]" />
+                      </div>
+                      <button type="submit" disabled={!editFormulaId || formulaBusy}>{formulaBusy ? 'Menyimpan…' : 'Simpan rumus'}</button>
+                    </form>
+                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus:</p>
+                    <div>
+                      {numericCols.map((c) => (
+                        <button key={c.id} type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="card">
+                  <h2>Hapus Kolom</h2>
+                  <p className="sub">Kolom Tanggal tidak bisa dihapus. Data di kolom yang dihapus ikut terhapus. Kolom yang dipakai rumus lain tidak bisa dihapus sebelum rumusnya diubah.</p>
+                  <div className="row">
+                    <div className="field" style={{ flex: '0 0 240px' }}>
+                      <select value={delColId} onChange={(e) => setDelColId(e.target.value)}>
+                        <option value="">Pilih kolom…</option>
+                        {columns.filter((c) => c.type !== 'tanggal').map((c) => (
+                          <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      className="danger"
+                      style={{ padding: '10px 18px', fontSize: 14 }}
+                      disabled={!delColId || delBusy}
+                      onClick={() => {
+                        const col = columns.find((c) => c.id === delColId);
+                        if (col) hapusKolom(col);
+                      }}
+                    >
+                      {delBusy ? 'Menghapus…' : 'Hapus kolom'}
+                    </button>
+                  </div>
+                  {msg && <p className="msg">{msg}</p>}
+                </div>
+              </>
+            )}
           </>
         )}
       </main>
