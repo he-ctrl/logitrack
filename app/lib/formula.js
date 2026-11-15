@@ -16,6 +16,14 @@
 // berbentuk nilai:Kolom; nilai boleh literal (in:Status) atau INI (= nilai
 // kolom itu di baris ini, mis. INI:Jenis barang). Perbandingan kondisi tanpa
 // peduli huruf besar/kecil dan spasi.
+// [INI:Kolom] (di mana saja di rumus per-baris): nilai kolom itu di baris
+// ini — mis. [INI:Status] atau [INI:jumlah]. Cocok dipakai di IF, mis.
+// IF([INI:Status] = in, sum([jumlah][INI:Jenis barang; in:Status]),
+// sum([jumlah][INI:Jenis barang; in:Status]) - [INI:jumlah]).
+// Teks literal di perbandingan boleh ditulis polos (in, out) atau pakai
+// tanda kutip ("Bawang merah"); perbandingan teks pakai = / <> saja dan
+// tanpa peduli huruf besar/kecil. INI hanya untuk rumus kolom per-baris,
+// bukan untuk variabel.
 // Referensi hanya boleh kolom angka (int / double / rumus).
 // Hasil harus angka berhingga; kalau tidak, evaluator mengembalikan error.
 
@@ -82,6 +90,13 @@ function tokenize(formula, names = []) {
       i++;
       continue;
     }
+    if (ch === '"') {
+      const close = formula.indexOf('"', i + 1);
+      if (close === -1) throw new Error('Tanda " tidak ditutup.');
+      tokens.push({ type: 'str', value: formula.slice(i + 1, close) });
+      i = close + 1;
+      continue;
+    }
     if (/[A-Za-z_]/.test(ch)) {
       // Kata kunci fungsi menang atas nama kolom bila diikuti '(' — supaya
       // kolom yang namanya sama dengan fungsi (mis. kolom "Stok" dengan
@@ -103,6 +118,12 @@ function tokenize(formula, names = []) {
         i += known.length;
         continue;
       }
+      // Kata polos yang tidak dikenal = teks literal (mis. in di
+      // [INI:Status] = in). Validasi posisi (harus di samping operator
+      // perbandingan) dilakukan di validateFormula.
+      tokens.push({ type: 'str', value: word });
+      i += word.length;
+      continue;
     }
     throw new Error(
       `Karakter tidak dikenal: "${ch}". Tulis nama kolom di dalam [tanda kurung siku], contoh: [Harga] * [Jumlah Barang].`
@@ -151,27 +172,40 @@ function parseTokens(tokens, resolve, opts = {}) {
     return conds;
   }
 
-  // Perbandingan — level terendah, di atas parseExpr.
+  // Perbandingan — level terendah, di atas parseExpr. Angka dibandingkan
+  // secara angka; teks dibandingkan tanpa peduli huruf besar/kecil dan
+  // hanya dengan = / <> (teks vs angka tidak bisa dibandingkan).
   function parseComparison() {
     let v = parseExpr();
     const t = peek();
     if (t && t.type === 'op' && ['>', '<', '>=', '<=', '=', '==', '<>', '!='].includes(t.value)) {
       const op = next().value;
       const rhs = parseExpr();
-      if (typeof v !== 'number' || typeof rhs !== 'number') {
-        throw new Error('Perbandingan hanya bisa membandingkan angka.');
+      if (typeof v === 'number' && typeof rhs === 'number') {
+        switch (op) {
+          case '>': return v > rhs;
+          case '<': return v < rhs;
+          case '>=': return v >= rhs;
+          case '<=': return v <= rhs;
+          case '=':
+          case '==': return v === rhs;
+          case '<>':
+          case '!=': return v !== rhs;
+          default: throw new Error('Operator perbandingan tidak dikenal.');
+        }
       }
-      switch (op) {
-        case '>': return v > rhs;
-        case '<': return v < rhs;
-        case '>=': return v >= rhs;
-        case '<=': return v <= rhs;
-        case '=':
-        case '==': return v === rhs;
-        case '<>':
-        case '!=': return v !== rhs;
-        default: throw new Error('Operator perbandingan tidak dikenal.');
+      if (typeof v === 'string' && typeof rhs === 'string') {
+        const a = v.trim().toLowerCase();
+        const b = rhs.trim().toLowerCase();
+        switch (op) {
+          case '=':
+          case '==': return a === b;
+          case '<>':
+          case '!=': return a !== b;
+          default: throw new Error('Perbandingan lebih besar/kecil hanya bisa untuk angka — untuk teks pakai = atau <>.');
+        }
       }
+      throw new Error('Perbandingan antara teks dan angka tidak bisa — cek lagi rumusnya.');
     }
     return v;
   }
@@ -229,9 +263,14 @@ function parseTokens(tokens, resolve, opts = {}) {
     const t = next();
     if (!t) throw new Error('Rumus berakhir sebelum waktunya (operator tanpa angka di belakangnya?).');
     if (t.type === 'num') return t.value;
+    if (t.type === 'str') return t.value;
     if (t.type === 'ref') {
       const v = resolve(t.value);
-      if (v === null || v === undefined || typeof v !== 'number' || !Number.isFinite(v)) {
+      if (v === null || v === undefined) {
+        throw new Error(`Kolom "${t.value}" tidak punya nilai di baris ini.`);
+      }
+      if (typeof v === 'string') return v;
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
         throw new Error(`Kolom "${t.value}" tidak punya nilai angka di baris ini.`);
       }
       return v;
@@ -394,6 +433,7 @@ export function validateFormula(formula, columns, variables = []) {
     // kondisinya secara terpisah, bukan sebagai kolom angka.
     const AGG = new Set(['sum', 'avg', 'median', 'count', 'min', 'max']);
     const condBlockPos = new Set();
+    const refs = [];
     for (let k = 3; k < tokens.length; k++) {
       if (tokens[k].type === 'ref' && tokens[k].value.includes(':')
         && tokens[k - 1]?.type === 'ref'
@@ -408,14 +448,56 @@ export function validateFormula(formula, columns, variables = []) {
           const colName = p.slice(ci + 1).trim();
           const col = byName.get(colName.toLowerCase());
           if (!col) return { refs: [], error: `"${colName}" tidak ditemukan — bukan kolom maupun variabel. Cek lagi namanya.` };
+          if (!refs.includes(col.name)) refs.push(col.name);
         }
       }
     }
-    const refs = [];
     let hasVar = false;
+    // Teks polos (mis. in) hanya boleh dipakai sebagai teks di perbandingan
+    // — harus bersebelahan langsung dengan operator perbandingan. Kata yang
+    // bukan kolom/variabel di tempat lain (mis. salah ketik nama kolom di
+    // hitungan) tetap ditolak dengan pesan yang jelas.
+    const CMP_OPS = new Set(['>', '<', '>=', '<=', '=', '==', '<>', '!=']);
+    for (let ti = 0; ti < tokens.length; ti++) {
+      const t = tokens[ti];
+      if (t.type !== 'str') continue;
+      const prev = tokens[ti - 1];
+      const nextTok = tokens[ti + 1];
+      const besideCmp = (prev?.type === 'op' && CMP_OPS.has(prev.value)) || (nextTok?.type === 'op' && CMP_OPS.has(nextTok.value));
+      if (!besideCmp) {
+        return { refs: [], error: `"${t.value}" hanya bisa dipakai sebagai teks di perbandingan, mis. [INI:Status] = in — bukan kolom maupun variabel. Cek lagi namanya.` };
+      }
+    }
     for (let ti = 0; ti < tokens.length; ti++) {
       const t = tokens[ti];
       if (t.type !== 'ref' || condBlockPos.has(ti)) continue;
+      // [INI:Kolom] = nilai kolom itu di baris ini — kolomnya harus ada
+      // (boleh tipe apa saja); pengecekan tipe terjadi lewat uji hitung
+      // di bawah dengan nilai dummy sesuai tipe kolomnya.
+      if (/^ini:/i.test(t.value)) {
+        const effName = t.value.slice(4).trim();
+        const effCol = byName.get(effName.toLowerCase());
+        if (!effCol) {
+          if (varByName.has(effName.toLowerCase())) {
+            return { refs: [], error: `INI hanya untuk kolom, bukan variabel — "${effName}" adalah variabel. Pakai [${effName}] saja.` };
+          }
+          return { refs: [], error: `"${effName}" tidak ditemukan — bukan kolom maupun variabel. Cek lagi namanya.` };
+        }
+        if (!refs.includes(effCol.name)) refs.push(effCol.name);
+        if (stokArgPos.has(ti)) {
+          const argNo = stokArgPos.get(ti);
+          if (argNo === 0 && effCol.type !== 'int' && effCol.type !== 'double' && effCol.type !== 'rumus') {
+            return { refs: [], error: `STOK butuh kolom angka sebagai jumlah — "${effName}" bertipe ${effCol.type}.` };
+          }
+          if (argNo === 1 && effCol.type === 'tanggal') {
+            return { refs: [], error: 'STOK butuh kolom barang (teks/pilihan/angka), bukan Tanggal.' };
+          }
+          if (argNo === 2 && effCol.type !== 'string' && effCol.type !== 'selection') {
+            return { refs: [], error: `Arah STOK harus kolom teks/pilihan (mis. Status berisi in/out) — "${effName}" bertipe ${effCol.type}.` };
+          }
+        }
+        continue;
+      }
       const col = byName.get(t.value.toLowerCase());
       if (stokArgPos.has(ti)) {
         // Argumen STOK: boleh kolom teks (barang/arah), bukan hanya angka.
@@ -449,8 +531,20 @@ export function validateFormula(formula, columns, variables = []) {
       return { refs: [], error: `"${t.value}" tidak ditemukan — bukan kolom maupun variabel. Cek lagi namanya.` };
     }
     if (refs.length === 0 && !hasVar) return { refs: [], error: 'Rumus harus memakai minimal satu kolom atau variabel, contoh: [Harga] * [Jumlah Barang].' };
-    // Uji hitung dengan nilai dummy 1 untuk menangkap kesalahan sintaks.
-    const trial = evalFormula(formula, () => 1, names, { running: () => 1, aggregate: () => 1 });
+    // Uji hitung dengan nilai dummy — dummy disesuaikan tipe kolomnya
+    // supaya [INI:Status] (teks) bisa diuji di perbandingan, dan nama yang
+    // tidak dikenal (mis. salah ketik) ketahuan karena dummy-nya null.
+    const trialResolve = (name) => {
+      const raw = String(name);
+      if (/^ini:/i.test(raw)) {
+        const col = byName.get(raw.slice(4).trim().toLowerCase());
+        if (!col) return null;
+        return (col.type === 'string' || col.type === 'selection') ? 'x' : 1;
+      }
+      if (byName.has(raw.toLowerCase()) || varByName.has(raw.toLowerCase())) return 1;
+      return null;
+    };
+    const trial = evalFormula(formula, trialResolve, names, { running: () => 1, aggregate: () => 1 });
     if (trial.error) return { refs: [], error: trial.error };
     return { refs, error: null };
   } catch (e) {
@@ -459,6 +553,7 @@ export function validateFormula(formula, columns, variables = []) {
 }
 
 // Daftar id kolom yang dipakai sebuah rumus (berdasarkan nama di skema).
+// [INI:Kolom] dihitung sebagai pemakaian kolom itu (buat blokir hapus).
 export function formulaRefIds(formula, columns) {
   const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
   const ids = [];
@@ -480,7 +575,8 @@ export function formulaRefIds(formula, columns) {
         }
         continue;
       }
-      const col = byName.get(t.value.toLowerCase());
+      const effName = /^ini:/i.test(t.value) ? t.value.slice(4).trim() : t.value;
+      const col = byName.get(effName.toLowerCase());
       if (col && !ids.includes(col.id)) ids.push(col.id);
     }
   } catch (e) { /* abaikan — validasi dilakukan di tempat lain */ }
