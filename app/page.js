@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CartesianGrid,
   Legend,
@@ -14,6 +14,7 @@ import {
 
 import { evalAggregate } from './lib/aggregate';
 import { evalFormula } from './lib/formula';
+import { reorderColumns } from './lib/columns';
 
 const COLORS = ['#2e86c1', '#f5a623', '#1e8449', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#2c3e50'];
 
@@ -127,6 +128,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
+
+  // Drag and drop judul kolom (khusus logistik): dragId = kolom yang
+  // sedang diseret, dropId/dropBefore = posisi lepasnya. Detail gerakan
+  // (titik awal, sudah melewati ambang, target lepas) disimpan di ref
+  // supaya handler pointerup selalu membaca nilai terbaru.
+  const [dragId, setDragId] = useState(null);
+  const [dropId, setDropId] = useState(null);
+  const [dropBefore, setDropBefore] = useState(true);
+  const dragRef = useRef(null);
 
   const [colName, setColName] = useState('');
   const [colType, setColType] = useState('int');
@@ -534,6 +544,68 @@ export default function Home() {
     const j = await res.json();
     if (res.ok) setRows(j.rows);
     else setMsg(j.error || 'Gagal menghapus baris.');
+  }
+
+  // --- Drag and drop urutan kolom (judul tabel, khusus logistik) ---
+  // Berbasis pointer supaya jalan di mouse maupun layar sentuh. Gerakan
+  // di bawah 6 px dianggap klik biasa (mis. klik tombol Hapus di judul).
+  function colDragStart(e, col) {
+    if (!isLogistik) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.target.closest('button')) return;
+    dragRef.current = { id: col.id, x: e.clientX, y: e.clientY, started: false, drop: null };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+
+  function colDragMove(e) {
+    const d = dragRef.current;
+    if (!d) return;
+    if (!d.started) {
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
+      d.started = true;
+      setDragId(d.id);
+    }
+    const el = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('th[data-col]');
+    if (!el) { d.drop = null; setDropId(null); return; }
+    const id = el.getAttribute('data-col');
+    if (id === d.id) { d.drop = null; setDropId(null); return; }
+    const r = el.getBoundingClientRect();
+    const before = e.clientX < r.left + r.width / 2;
+    d.drop = { id, before };
+    setDropId(id);
+    setDropBefore(before);
+  }
+
+  async function colDragEnd() {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setDragId(null);
+    setDropId(null);
+    if (!d?.started || !d.drop || d.drop.id === d.id) return;
+    const prev = columns;
+    const next = reorderColumns(columns, d.id, d.drop.id, d.drop.before);
+    if (next === columns) return;
+    setColumns(next);
+    setMsg('');
+    try {
+      const res = await fetch('/api/columns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: next.map((c) => c.id) }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan urutan kolom.');
+      setColumns(j.columns);
+    } catch (err) {
+      setColumns(prev);
+      setError(err.message);
+    }
+  }
+
+  function colDragCancel() {
+    dragRef.current = null;
+    setDragId(null);
+    setDropId(null);
   }
 
   async function hapusKolom(col) {
@@ -1317,7 +1389,17 @@ export default function Home() {
                         <tr>
                           <th style={{ width: 44 }}>No</th>
                           {columns.map((c) => (
-                            <th key={c.id} className={isNumeric(c) ? 'num' : ''}>
+                            <th
+                              key={c.id}
+                              data-col={c.id}
+                              className={`${isNumeric(c) ? 'num' : ''}${isLogistik ? ' th-drag' : ''}${dragId === c.id ? ' th-dragging' : ''}${dropId === c.id ? (dropBefore ? ' th-drop-before' : ' th-drop-after') : ''}`}
+                              title={isLogistik ? 'Seret untuk memindah kolom' : undefined}
+                              onPointerDown={isLogistik ? (e) => colDragStart(e, c) : undefined}
+                              onPointerMove={isLogistik ? colDragMove : undefined}
+                              onPointerUp={isLogistik ? colDragEnd : undefined}
+                              onPointerCancel={isLogistik ? colDragCancel : undefined}
+                            >
+                              {isLogistik && <span aria-hidden="true" style={{ cursor: 'grab', marginRight: 4 }}>⋮⋮</span>}
                               {c.name} <span style={{ fontWeight: 400 }}>({c.type}{c.type === 'rumus' ? <> = <FormulaText text={c.formula} /></> : ''})</span>
                               {isLogistik && c.type !== 'tanggal' && (
                                 <button
@@ -1355,7 +1437,7 @@ export default function Home() {
                 )}
                 <div style={{ marginTop: 12 }} className="row">
                   <button className="ghost" onClick={loadData}>Muat ulang</button>
-                  <span className="legend">Menampilkan {sortedFilteredRows.length} dari {rows.length} baris (filter aktif dari menu Filter Data).</span>
+                  <span className="legend">Menampilkan {sortedFilteredRows.length} dari {rows.length} baris (filter aktif dari menu Filter Data).{isLogistik ? ' Seret judul kolom (⋮⋮) untuk mengubah urutan tampilannya — tersimpan otomatis.' : ''}</span>
                 </div>
                 <div style={{ marginTop: 12 }} className="row">
                   <span className="legend">Unduh tabel (data yang tampil, termasuk filter):</span>
