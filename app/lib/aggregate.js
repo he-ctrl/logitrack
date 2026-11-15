@@ -14,7 +14,10 @@
 //   [Nama Variabel]                 nilai variabel lain (boleh dipakai di
 //     dalam rumus, tidak boleh di dalam sum/avg/... — pakai langsung).
 //   Operator + - * / % ^ dan ( ), urutan hitung PEMDAS, boleh unary minus.
-//   Nama kolom/variabel yang mengandung spasi wajib pakai [tanda kurung siku].
+//   Nama kolom/variabel yang mengandung spasi boleh ditulis polos tanpa
+//   [tanda kurung siku] bila namanya sudah dikenal (mis. Wortel stok) —
+//   parser mencocokkan nama terpanjang yang dikenal; bila tidak dikenal,
+//   tetap wajib pakai [tanda kurung siku].
 //   Nilai kondisi boleh mengandung spasi (dibaca sampai ':' pertama).
 //
 // Contoh lengkap (template pengguna):
@@ -86,9 +89,39 @@ function makeParser(src, columns, variables) {
     if (!name) parseError('Nama kolom di dalam [ ] tidak boleh kosong.');
     return name;
   }
+  // Cocokkan nama kolom/variabel yang dikenal, mulai dari posisi sekarang —
+  // nama terpanjang menang (mis. "Stok Bawang" mengalahkan "Stok").
+  // Dipakai supaya nama berspasi boleh diketik polos tanpa [ ].
+  // Kembalian null bila tidak ada nama yang cocok, atau bila namanya
+  // diikuti '(' (itu panggilan fungsi seperti sum(...), bukan nama).
+  function readKnownName() {
+    skipWs();
+    const rest = s.slice(i).toLowerCase();
+    let best = null;
+    const names = [
+      ...columns.map((c) => c.name),
+      ...(variables || []).map((v) => v.name),
+    ];
+    for (const n of names) {
+      const name = String(n || '');
+      if (!name) continue;
+      if (rest.startsWith(name.toLowerCase()) && (!best || name.length > best.length)) {
+        const after = rest[name.length];
+        if (after === undefined || !/[a-z0-9_]/.test(after)) best = name;
+      }
+    }
+    if (!best) return null;
+    let j = i + best.length;
+    while (j < s.length && /\s/.test(s[j])) j++;
+    if (s[j] === '(') return null;
+    i += best.length;
+    return best;
+  }
   function readColName() {
     skipWs();
     if (s[i] === '[') return readBracketName();
+    const known = readKnownName();
+    if (known) return known;
     const id = readIdent();
     if (!id) parseError(`Nama kolom tidak dikenal di posisi ${i + 1}. Pakai [Nama Kolom] bila namanya mengandung spasi.`);
     return id;
@@ -165,6 +198,8 @@ function makeParser(src, columns, variables) {
     }
     if (ch && /[0-9]/.test(ch)) return readNumber();
     if (ch === '[') return readVarOrFail(readBracketName());
+    const known = readKnownName();
+    if (known) return readVarOrFail(known);
     const id = readIdent();
     if (!id) parseError(`Karakter tidak dikenal "${ch || 'akhir rumus'}" di posisi ${i + 1}.`);
     skipWs();
