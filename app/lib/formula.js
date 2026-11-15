@@ -5,6 +5,12 @@
 // [ ] bila namanya sudah dikenal (mis. Wortel stok) — tokenizer mencocokkan
 // nama terpanjang yang dikenal; bila tidak dikenal, tetap wajib pakai [ ].
 // Operator: + - * / % ^ dan tanda kurung. Urutan hitung PEMDAS.
+// IF ala Excel: IF(kondisi, jika_benar, jika_salah) — alias JIKA; kondisi
+// memakai perbandingan > < >= <= = <> (!=, ==); bisa bersarang:
+// IF(A, 1, IF(B, 2, 3)). AND/OR/NOT juga ada (alias DAN/ATAU/TIDAK).
+// STOK (hanya kolom rumus per-baris): STOK([jumlah], [Jenis barang], [Status])
+// = stok berjalan per barang sampai baris ini (urut tanggal): in/masuk nambah,
+// out/keluar ngurangin, nilai arah lain diabaikan; tanpa kolom arah, semua nambah.
 // Referensi hanya boleh kolom angka (int / double / rumus).
 // Hasil harus angka berhingga; kalau tidak, evaluator mengembalikan error.
 
@@ -55,12 +61,36 @@ function tokenize(formula, names = []) {
       i = close + 1;
       continue;
     }
-    if ('+-*/%^()'.includes(ch)) {
+    if (ch === ',') {
+      tokens.push({ type: 'op', value: ',' });
+      i++;
+      continue;
+    }
+    const two = formula.slice(i, i + 2);
+    if (['>=', '<=', '<>', '!=', '=='].includes(two)) {
+      tokens.push({ type: 'op', value: two });
+      i += 2;
+      continue;
+    }
+    if ('+-*/%^()><='.includes(ch)) {
       tokens.push({ type: 'op', value: ch });
       i++;
       continue;
     }
     if (/[A-Za-z_]/.test(ch)) {
+      // Kata kunci fungsi menang atas nama kolom bila diikuti '(' — supaya
+      // kolom yang namanya sama dengan fungsi (mis. kolom "Stok" dengan
+      // rumus STOK(...)) tetap bisa dipakai sebagai fungsi.
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(formula.slice(i))[0];
+      const after = formula.slice(i + word.length).trimStart();
+      if (after[0] === '(') {
+        const kw = word.toLowerCase();
+        if (kw === 'if' || kw === 'jika') { tokens.push({ type: 'fn', value: 'if' }); i += word.length; continue; }
+        if (kw === 'and' || kw === 'dan') { tokens.push({ type: 'fn', value: 'and' }); i += word.length; continue; }
+        if (kw === 'or' || kw === 'atau') { tokens.push({ type: 'fn', value: 'or' }); i += word.length; continue; }
+        if (kw === 'not' || kw === 'tidak') { tokens.push({ type: 'fn', value: 'not' }); i += word.length; continue; }
+        if (kw === 'stok') { tokens.push({ type: 'fn', value: 'stok' }); i += word.length; continue; }
+      }
       const known = matchKnownName(i);
       if (known) {
         tokens.push({ type: 'ref', value: known });
@@ -76,17 +106,60 @@ function tokenize(formula, names = []) {
 }
 
 // ---- Parser (recursive descent, PEMDAS) ----
-function parseTokens(tokens, resolve) {
+// Nilai internal bisa number atau boolean (hasil perbandingan). Hitung
+// aritmetika hanya menerima number; kondisi IF/AND/OR/NOT menerima
+// boolean atau number (0 = salah, selain 0 = benar, ala Excel).
+// opts.running(qty, item, dir) -> number|null dipakai fungsi STOK.
+function parseTokens(tokens, resolve, opts = {}) {
   let pos = 0;
   const peek = () => tokens[pos];
   const next = () => tokens[pos++];
+
+  function needNum(v) {
+    if (typeof v !== 'number') throw new Error('Hasil perbandingan (benar/salah) tidak bisa langsung dihitung — pakai IF(...) untuk mengubahnya jadi angka.');
+    return v;
+  }
+  function truthy(v) {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    throw new Error('Kondisi IF harus berupa perbandingan atau angka.');
+  }
+  function expectOp(value, msg) {
+    const t = next();
+    if (!t || t.type !== 'op' || t.value !== value) throw new Error(msg);
+  }
+
+  // Perbandingan — level terendah, di atas parseExpr.
+  function parseComparison() {
+    let v = parseExpr();
+    const t = peek();
+    if (t && t.type === 'op' && ['>', '<', '>=', '<=', '=', '==', '<>', '!='].includes(t.value)) {
+      const op = next().value;
+      const rhs = parseExpr();
+      if (typeof v !== 'number' || typeof rhs !== 'number') {
+        throw new Error('Perbandingan hanya bisa membandingkan angka.');
+      }
+      switch (op) {
+        case '>': return v > rhs;
+        case '<': return v < rhs;
+        case '>=': return v >= rhs;
+        case '<=': return v <= rhs;
+        case '=':
+        case '==': return v === rhs;
+        case '<>':
+        case '!=': return v !== rhs;
+        default: throw new Error('Operator perbandingan tidak dikenal.');
+      }
+    }
+    return v;
+  }
 
   function parseExpr() {
     let v = parseTerm();
     while (peek() && peek().type === 'op' && (peek().value === '+' || peek().value === '-')) {
       const op = next().value;
       const rhs = parseTerm();
-      v = op === '+' ? v + rhs : v - rhs;
+      v = op === '+' ? needNum(v) + needNum(rhs) : needNum(v) - needNum(rhs);
     }
     return v;
   }
@@ -96,13 +169,13 @@ function parseTokens(tokens, resolve) {
     while (peek() && peek().type === 'op' && (peek().value === '*' || peek().value === '/' || peek().value === '%')) {
       const op = next().value;
       const rhs = parseFactor();
-      if (op === '*') v = v * rhs;
+      if (op === '*') v = needNum(v) * needNum(rhs);
       else if (op === '/') {
-        if (rhs === 0) throw new Error('Pembagian dengan nol.');
-        v = v / rhs;
+        if (needNum(rhs) === 0) throw new Error('Pembagian dengan nol.');
+        v = needNum(v) / needNum(rhs);
       } else {
-        if (rhs === 0) throw new Error('Modulo dengan nol.');
-        v = v % rhs;
+        if (needNum(rhs) === 0) throw new Error('Modulo dengan nol.');
+        v = needNum(v) % needNum(rhs);
       }
     }
     return v;
@@ -113,7 +186,7 @@ function parseTokens(tokens, resolve) {
     if (peek() && peek().type === 'op' && peek().value === '^') {
       next();
       const exp = parseFactor(); // pangkat asosiatif kanan: 2^3^2 = 2^(3^2)
-      base = Math.pow(base, exp);
+      base = Math.pow(needNum(base), needNum(exp));
     }
     return base;
   }
@@ -121,7 +194,7 @@ function parseTokens(tokens, resolve) {
   function parseUnary() {
     if (peek() && peek().type === 'op' && peek().value === '-') {
       next();
-      return -parseUnary();
+      return -needNum(parseUnary());
     }
     if (peek() && peek().type === 'op' && peek().value === '+') {
       next();
@@ -141,8 +214,60 @@ function parseTokens(tokens, resolve) {
       }
       return v;
     }
+    if (t.type === 'fn') {
+      const kw = t.value;
+      expectOp('(', `Fungsi ${kw.toUpperCase()} harus diikuti tanda kurung, mis. ${kw.toUpperCase()}(...).`);
+      if (kw === 'stok') {
+        // STOK([jumlah], [Jenis barang], [Status]) — stok berjalan per barang
+        // sampai baris ini (urut tanggal): in/masuk nambah, out/keluar ngurangin.
+        const expectRefArg = () => {
+          const a = next();
+          if (!a || a.type !== 'ref') throw new Error('STOK butuh nama kolom, mis. STOK([jumlah], [Jenis barang], [Status]).');
+          return a.value;
+        };
+        const qty = expectRefArg();
+        expectOp(',', 'STOK butuh 2 atau 3 bagian dipisah koma: STOK([jumlah], [Jenis barang], [Status]).');
+        const item = expectRefArg();
+        let dir = null;
+        if (peek() && peek().type === 'op' && peek().value === ',') {
+          next();
+          dir = expectRefArg();
+        }
+        expectOp(')', 'STOK harus ditutup dengan ).');
+        if (!opts || typeof opts.running !== 'function') {
+          throw new Error('STOK hanya bisa dihitung dari data tabel (saat menyimpan baris).');
+        }
+        const v = opts.running(qty, item, dir);
+        if (v === null || v === undefined || typeof v !== 'number' || !Number.isFinite(v)) {
+          throw new Error('STOK tidak bisa dihitung (kolom tidak ditemukan atau tidak ada baris yang cocok).');
+        }
+        return v;
+      }
+      if (kw === 'if') {
+        const cond = parseComparison();
+        expectOp(',', 'IF butuh 3 bagian dipisah koma: IF(kondisi, jika benar, jika salah).');
+        const a = parseComparison();
+        expectOp(',', 'IF butuh 3 bagian dipisah koma: IF(kondisi, jika benar, jika salah).');
+        const b = parseComparison();
+        expectOp(')', 'IF harus ditutup dengan ).');
+        return truthy(cond) ? needNum(a) : needNum(b);
+      }
+      if (kw === 'and' || kw === 'or') {
+        const args = [parseComparison()];
+        while (peek() && peek().type === 'op' && peek().value === ',') {
+          next();
+          args.push(parseComparison());
+        }
+        expectOp(')', `${kw.toUpperCase()} harus ditutup dengan ).`);
+        return kw === 'and' ? args.every(truthy) : args.some(truthy);
+      }
+      // not
+      const arg = parseComparison();
+      expectOp(')', 'NOT harus ditutup dengan ).');
+      return !truthy(arg);
+    }
     if (t.type === 'op' && t.value === '(') {
-      const v = parseExpr();
+      const v = parseComparison();
       const close = next();
       if (!close || close.type !== 'op' || close.value !== ')') {
         throw new Error('Tanda kurung ( tidak ditutup dengan ).');
@@ -152,7 +277,7 @@ function parseTokens(tokens, resolve) {
     throw new Error(`Tidak bisa membaca rumus di dekat "${t.value}".`);
   }
 
-  const value = parseExpr();
+  const value = parseComparison();
   if (pos < tokens.length) {
     const t = tokens[pos];
     throw new Error(`Tidak bisa membaca rumus di dekat "${t.value}".`);
@@ -162,14 +287,14 @@ function parseTokens(tokens, resolve) {
 
 // Evaluasi rumus. resolve(name) -> number | null (null = tidak ada nilai angka).
 // names: daftar nama kolom/variabel yang dikenal — dipakai supaya nama
-// berspasi boleh ditulis polos tanpa [ ]. Kembalian:
-// { value: number|null, error: string|null }
-export function evalFormula(formula, resolve, names = []) {
+// berspasi boleh ditulis polos tanpa [ ]. opts.running dipakai fungsi STOK.
+// Kembalian: { value: number|null, error: string|null }
+export function evalFormula(formula, resolve, names = [], opts = {}) {
   try {
     if (!formula || !String(formula).trim()) return { value: null, error: 'Rumus kosong.' };
     const tokens = tokenize(String(formula), names);
     if (tokens.length === 0) return { value: null, error: 'Rumus kosong.' };
-    const value = parseTokens(tokens, (name) => resolve(name));
+    const value = parseTokens(tokens, (name) => resolve(name), opts);
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       return { value: null, error: 'Hasil rumus bukan angka yang valid.' };
     }
@@ -191,11 +316,60 @@ export function validateFormula(formula, columns, variables = []) {
     const tokens = tokenize(String(formula), names);
     const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
     const varByName = new Map((variables || []).map((v) => [String(v.name).toLowerCase(), v]));
+    // Petakan argumen STOK: token fn 'stok' diikuti '(' — ref di dalamnya
+    // adalah argumen ke-0 (jumlah, harus angka), ke-1 (barang), ke-2 (arah).
+    const stokArgPos = new Map(); // indeks token -> nomor argumen
+    const stokCalls = [];
+    for (let k = 0; k < tokens.length; k++) {
+      if (tokens[k].type === 'fn' && tokens[k].value === 'stok') {
+        let j = k + 1;
+        if (tokens[j]?.type !== 'op' || tokens[j].value !== '(') continue;
+        j++;
+        let depth = 0, argNo = 0;
+        const callArgs = [];
+        for (; j < tokens.length; j++) {
+          const tk = tokens[j];
+          if (tk.type === 'op' && tk.value === '(') depth++;
+          else if (tk.type === 'op' && tk.value === ')') {
+            if (depth === 0) break;
+            depth--;
+          } else if (tk.type === 'op' && tk.value === ',' && depth === 0) argNo++;
+          else if (tk.type === 'ref' && depth === 0) {
+            stokArgPos.set(j, argNo);
+            callArgs[argNo] = tk.value;
+          }
+        }
+        stokCalls.push(callArgs);
+      }
+    }
+    for (const callArgs of stokCalls) {
+      const n = callArgs.filter((a) => a !== undefined).length;
+      if (n < 2 || n > 3) return { refs: [], error: 'STOK butuh 2 atau 3 bagian: STOK([jumlah], [Jenis barang], [Status]).' };
+    }
     const refs = [];
     let hasVar = false;
-    for (const t of tokens) {
+    for (let ti = 0; ti < tokens.length; ti++) {
+      const t = tokens[ti];
       if (t.type !== 'ref') continue;
       const col = byName.get(t.value.toLowerCase());
+      if (stokArgPos.has(ti)) {
+        // Argumen STOK: boleh kolom teks (barang/arah), bukan hanya angka.
+        if (!col) return { refs: [], error: `"${t.value}" tidak ditemukan — bukan kolom maupun variabel. Cek lagi namanya.` };
+        const argNo = stokArgPos.get(ti);
+        if (argNo === 0) {
+          if (col.type !== 'int' && col.type !== 'double' && col.type !== 'rumus') {
+            return { refs: [], error: `STOK butuh kolom angka sebagai jumlah — "${t.value}" bertipe ${col.type}.` };
+          }
+          if (!refs.includes(col.name)) refs.push(col.name);
+        } else if (argNo === 1) {
+          if (col.type === 'tanggal') return { refs: [], error: 'STOK butuh kolom barang (teks/pilihan/angka), bukan Tanggal.' };
+        } else {
+          if (col.type !== 'string' && col.type !== 'selection') {
+            return { refs: [], error: `Arah STOK harus kolom teks/pilihan (mis. Status berisi in/out) — "${t.value}" bertipe ${col.type}.` };
+          }
+        }
+        continue;
+      }
       if (col) {
         if (col.type !== 'int' && col.type !== 'double' && col.type !== 'rumus') {
           return { refs: [], error: `Kolom "${t.value}" bertipe ${col.type} — rumus hanya bisa memakai kolom angka (int/double/rumus).` };
@@ -211,7 +385,7 @@ export function validateFormula(formula, columns, variables = []) {
     }
     if (refs.length === 0 && !hasVar) return { refs: [], error: 'Rumus harus memakai minimal satu kolom atau variabel, contoh: [Harga] * [Jumlah Barang].' };
     // Uji hitung dengan nilai dummy 1 untuk menangkap kesalahan sintaks.
-    const trial = evalFormula(formula, () => 1, names);
+    const trial = evalFormula(formula, () => 1, names, { running: () => 1 });
     if (trial.error) return { refs: [], error: trial.error };
     return { refs, error: null };
   } catch (e) {
