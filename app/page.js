@@ -47,6 +47,8 @@ export default function Home() {
   const [colName, setColName] = useState('');
   const [colType, setColType] = useState('int');
   const [colBusy, setColBusy] = useState(false);
+  const [delColId, setDelColId] = useState('');
+  const [delBusy, setDelBusy] = useState(false);
 
   const [rowForm, setRowForm] = useState({ tanggal: nowInput() });
   const [rowBusy, setRowBusy] = useState(false);
@@ -100,11 +102,11 @@ export default function Home() {
       try {
         const res = await fetch(`/api/predict?id=${job.id}`, { cache: 'no-store' });
         const j = await res.json();
-        if (res.ok && j.job) {
-          setJob(j.job);
-          if (j.job.status === 'done') setResult(j.result);
-          if (j.job.status === 'error') setPredMsg(j.job.error || 'Prediksi gagal.');
-        }
+        if (!res.ok) return;
+        if (!j.job) { setJob(null); return; }
+        setJob(j.job);
+        if (j.job.status === 'done') setResult(j.result);
+        if (j.job.status === 'error') setPredMsg(j.job.error || 'Prediksi gagal.');
       } catch (e) { /* coba lagi di interval berikut */ }
     }, 3000);
     return () => clearInterval(t);
@@ -169,6 +171,37 @@ export default function Home() {
     const j = await res.json();
     if (res.ok) setRows(j.rows);
     else setMsg(j.error || 'Gagal menghapus baris.');
+  }
+
+  async function hapusKolom(col) {
+    if (!confirm(`Hapus kolom "${col.name}"? Semua data di kolom ini ikut terhapus.`)) return;
+    setDelBusy(true);
+    setMsg('');
+    try {
+      const res = await fetch(`/api/columns?id=${col.id}`, { method: 'DELETE' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menghapus kolom.');
+      setColumns(j.columns);
+      setRows(j.rows);
+      setChartY((prev) => prev.filter((id) => id !== col.id));
+      setPredCols((prev) => prev.filter((id) => id !== col.id));
+      setRowForm((prev) => {
+        const next = { ...prev };
+        delete next[col.id];
+        return next;
+      });
+      setDelColId('');
+      if (chartX === col.id) setChartX('tanggal');
+      if (result && result.columns && result.columns[col.id]) {
+        setResult(null);
+        setJob(null);
+      }
+      setMsg(`Kolom "${col.name}" dihapus.`);
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setDelBusy(false);
+    }
   }
 
   async function isiContoh() {
@@ -259,23 +292,29 @@ export default function Home() {
     });
   }, [sortedRows, rows, chartX, chartY]);
 
-  const forecastChart = useMemo(() => {
+  // Kolom hasil prediksi yang masih ada di skema (kolom yang sudah dihapus disaring).
+  const predColIds = useMemo(() => {
     if (!result) return [];
+    return Object.keys(result.columns).filter((id) => columns.some((c) => c.id === id));
+  }, [result, columns]);
+
+  const forecastChart = useMemo(() => {
+    if (!result || predColIds.length === 0) return [];
     const pts = sortedRows.map((r) => {
       const p = { t: fmtTick(r.values.tanggal), _sort: new Date(r.values.tanggal).getTime() };
-      for (const id of Object.keys(result.columns)) p[id] = r.values[id];
+      for (const id of predColIds) p[id] = r.values[id];
       return p;
     });
-    const first = result.columns[Object.keys(result.columns)[0]];
+    const first = result.columns[predColIds[0]];
     if (!first) return pts;
     first.dates.forEach((iso, i) => {
       const p = { t: fmtTick(iso), _sort: new Date(iso).getTime() };
-      for (const [id, col] of Object.entries(result.columns)) p[`${id}_pred`] = col.values[i];
+      for (const id of predColIds) p[`${id}_pred`] = result.columns[id].values[i];
       pts.push(p);
     });
     pts.sort((a, b) => a._sort - b._sort);
     return pts;
-  }, [result, sortedRows]);
+  }, [result, sortedRows, predColIds]);
 
   function toggleY(id) {
     setChartY((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -318,6 +357,16 @@ export default function Home() {
                         {columns.map((c) => (
                           <th key={c.id} className={c.type === 'int' || c.type === 'double' ? 'num' : ''}>
                             {c.name} <span style={{ fontWeight: 400 }}>({c.type})</span>
+                            {c.type !== 'tanggal' && (
+                              <button
+                                className="danger"
+                                style={{ marginLeft: 8, padding: '2px 8px', fontSize: 12 }}
+                                onClick={() => hapusKolom(c)}
+                                title={`Hapus kolom ${c.name}`}
+                              >
+                                Hapus
+                              </button>
+                            )}
                           </th>
                         ))}
                         <th></th>
@@ -364,6 +413,30 @@ export default function Home() {
                 </div>
                 <button type="submit" disabled={colBusy}>{colBusy ? 'Menambah…' : 'Tambah kolom'}</button>
               </form>
+              <div style={{ marginTop: 14 }}>
+                <p className="sub" style={{ marginBottom: 6 }}>Hapus kolom — kolom Tanggal tidak bisa dihapus. Data di kolom yang dihapus ikut terhapus.</p>
+                <div className="row">
+                  <div className="field" style={{ flex: '0 0 240px' }}>
+                    <select value={delColId} onChange={(e) => setDelColId(e.target.value)}>
+                      <option value="">Pilih kolom…</option>
+                      {columns.filter((c) => c.type !== 'tanggal').map((c) => (
+                        <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    className="danger"
+                    style={{ padding: '10px 18px', fontSize: 14 }}
+                    disabled={!delColId || delBusy}
+                    onClick={() => {
+                      const col = columns.find((c) => c.id === delColId);
+                      if (col) hapusKolom(col);
+                    }}
+                  >
+                    {delBusy ? 'Menghapus…' : 'Hapus kolom'}
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="card">
@@ -497,7 +570,10 @@ export default function Home() {
               </form>
               {predMsg && <p className="msg">{predMsg}</p>}
               {job && job.status === 'error' && <p className="msg err">{job.error}</p>}
-              {result && (
+              {result && predColIds.length === 0 && (
+                <p className="legend">Hasil prediksi ini memakai kolom yang sudah dihapus — jalankan prediksi lagi.</p>
+              )}
+              {result && predColIds.length > 0 && (
                 <>
                   {result.meta?.warning && <p className="msg">{result.meta.warning}</p>}
                   {Object.keys(result.meta?.skipped || {}).length > 0 && (
@@ -511,10 +587,10 @@ export default function Home() {
                         <YAxis tick={{ fontSize: 12 }} />
                         <Tooltip />
                         <Legend />
-                        {Object.keys(result.columns).map((id, i) => (
+                        {predColIds.map((id, i) => (
                           <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
                         ))}
-                        {Object.keys(result.columns).map((id, i) => (
+                        {predColIds.map((id, i) => (
                           <Line key={`${id}_pred`} type="monotone" dataKey={`${id}_pred`} name={`${columns.find((c) => c.id === id)?.name || id} (prediksi)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />
                         ))}
                       </LineChart>
@@ -525,16 +601,16 @@ export default function Home() {
                       <thead>
                         <tr>
                           <th>Tanggal prediksi</th>
-                          {Object.keys(result.columns).map((id) => (
+                          {predColIds.map((id) => (
                             <th key={id} className="num">{columns.find((c) => c.id === id)?.name || id}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {result.columns[Object.keys(result.columns)[0]].dates.map((iso, i) => (
+                        {result.columns[predColIds[0]].dates.map((iso, i) => (
                           <tr key={iso}>
                             <td>{fmtDate(iso)}</td>
-                            {Object.keys(result.columns).map((id) => (
+                            {predColIds.map((id) => (
                               <td key={id} className="num">{fmtNum(result.columns[id].values[i])}</td>
                             ))}
                           </tr>
