@@ -12,6 +12,8 @@ import {
   YAxis,
 } from 'recharts';
 
+import { evalAggregate } from './lib/aggregate';
+
 const COLORS = ['#2e86c1', '#f5a623', '#1e8449', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#2c3e50'];
 
 const VIEWS = [
@@ -25,6 +27,29 @@ const VIEWS = [
 ];
 
 const isNumeric = (c) => c.type === 'int' || c.type === 'double' || c.type === 'rumus';
+
+// Palet warna pilihan kolom selection (dipakai juga sebagai warna default).
+const SELECTION_COLORS = [
+  { key: 'hijau', bg: '#1e8449' },
+  { key: 'merah', bg: '#c0392b' },
+  { key: 'biru', bg: '#2e86c1' },
+  { key: 'kuning', bg: '#b7950b' },
+  { key: 'ungu', bg: '#8e44ad' },
+  { key: 'oranye', bg: '#d35400' },
+  { key: 'pink', bg: '#c2185b' },
+  { key: 'abu', bg: '#5d6d7e' },
+];
+
+// Warna teks kontras (hitam/putih) berdasarkan kecerahan latar.
+function textOn(bg) {
+  const m = /^#([0-9a-f]{6})$/i.exec(bg || '');
+  if (!m) return '#fff';
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#1f2a36' : '#ffffff';
+}
 
 function nowInput() {
   const d = new Date();
@@ -122,6 +147,20 @@ export default function Home() {
   const [pwMsg, setPwMsg] = useState('');
   const [pwBusy, setPwBusy] = useState(false);
 
+  const [selOptions, setSelOptions] = useState([
+    { value: 'in', color: '#1e8449' },
+    { value: 'out', color: '#c0392b' },
+  ]);
+  const [aggFormula, setAggFormula] = useState('');
+  const [aggName, setAggName] = useState('');
+  const [savedAggs, setSavedAggs] = useState([]);
+  const [aggBusy, setAggBusy] = useState(false);
+  const [aggMsg, setAggMsg] = useState('');
+  const [varName, setVarName] = useState('');
+  const [varNumCol, setVarNumCol] = useState('');
+  const [varAggFn, setVarAggFn] = useState('sum');
+  const [varMsg, setVarMsg] = useState('');
+
   const isLogistik = me?.role === 'logistik';
   const numericCols = useMemo(() => columns.filter(isNumeric), [columns]);
   const formulaCols = useMemo(() => columns.filter((c) => c.type === 'rumus'), [columns]);
@@ -136,10 +175,10 @@ export default function Home() {
     return [...vals].sort((a, b) => a.localeCompare(b, 'id'));
   }, [rows]);
 
-  // Baris terakhir (tanggal terbaru) yang cocok dengan semua nilai string
+  // Baris terakhir (tanggal terbaru) yang cocok dengan semua nilai kategori
   // yang sudah terisi di form — dipakai untuk isi otomatis.
   function latestMatchingRow(formValues) {
-    const filled = columns.filter((c) => c.type === 'string' && (formValues[c.id] ?? '') !== '');
+    const filled = columns.filter((c) => (c.type === 'string' || c.type === 'selection') && (formValues[c.id] ?? '') !== '');
     if (filled.length === 0) return null;
     const matches = rows.filter((r) =>
       filled.every((c) => String(r.values[c.id] ?? '') === String(formValues[c.id] ?? ''))
@@ -190,7 +229,7 @@ export default function Home() {
         if (f === '' || f == null) continue;
         const col = columns.find((c) => c.id === k);
         if (!col) continue;
-        if (col.type === 'string') {
+        if (col.type === 'string' || col.type === 'selection') {
           if (String(r.values[k] ?? '') !== f) return false;
         } else if (col.type === 'tanggal') {
           const d = new Date(r.values.tanggal);
@@ -266,10 +305,19 @@ export default function Home() {
         setMe({ username: j.username, role: j.role });
         setLoading(true);
         await loadData();
+        await loadAggs();
       }
     } catch (e) { /* belum login */ }
     setAuthChecked(true);
   }, [loadData]);
+
+  const loadAggs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/aggregates', { cache: 'no-store' });
+      const j = await res.json();
+      if (res.ok) setSavedAggs(j.aggregates || []);
+    } catch (e) { /* abaikan */ }
+  }, []);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
 
@@ -289,6 +337,7 @@ export default function Home() {
       setLoginPass('');
       setLoading(true);
       await loadData();
+      await loadAggs();
     } catch (err) {
       setLoginErr(err.message);
     } finally {
@@ -331,7 +380,7 @@ export default function Home() {
       const res = await fetch('/api/columns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: colName, type: colType, formula: colType === 'rumus' ? formulaText : undefined }),
+        body: JSON.stringify({ name: colName, type: colType, formula: colType === 'rumus' ? formulaText : undefined, options: colType === 'selection' ? selOptions : undefined }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menambah kolom.');
@@ -339,10 +388,16 @@ export default function Home() {
       setRows(j.rows);
       setColName('');
       setFormulaText('');
+      setSelOptions([
+        { value: 'in', color: '#1e8449' },
+        { value: 'out', color: '#c0392b' },
+      ]);
       setMsg(
         colType === 'rumus'
           ? `Kolom rumus "${j.added.name}" ditambahkan (= ${j.added.formula}). Nilainya terhitung otomatis di semua baris.`
-          : `Kolom "${j.added.name}" (${j.added.type}) ditambahkan. Baris lama diisi ${j.added.type === 'string' ? 'kosong' : '0'}.`
+          : colType === 'selection'
+            ? `Kolom selection "${j.added.name}" ditambahkan dengan ${j.added.options.length} pilihan (${j.added.options.map((o) => o.value).join(', ')}).`
+            : `Kolom "${j.added.name}" (${j.added.type}) ditambahkan. Baris lama diisi ${j.added.type === 'string' ? 'kosong' : '0'}.`
       );
     } catch (err) {
       setMsg(err.message);
@@ -585,6 +640,100 @@ export default function Home() {
     }
   }
 
+  async function simpanAggregate(e) {
+    e.preventDefault();
+    setAggBusy(true);
+    setAggMsg('');
+    try {
+      const res = await fetch('/api/aggregates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: aggName, formula: aggFormula }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan rumus.');
+      setSavedAggs(j.aggregates);
+      setAggName('');
+      setAggMsg(`Variabel "${j.added.name}" disimpan.`);
+    } catch (err) {
+      setAggMsg(err.message);
+    } finally {
+      setAggBusy(false);
+    }
+  }
+
+  async function hapusAggregate(id) {
+    if (!confirm('Hapus variabel ini?')) return;
+    const res = await fetch(`/api/aggregates?id=${id}`, { method: 'DELETE' });
+    const j = await res.json();
+    if (res.ok) setSavedAggs(j.aggregates);
+    else setAggMsg(j.error || 'Gagal menghapus variabel.');
+  }
+
+  // Nama kolom untuk rumus: pakai [Nama] bila mengandung spasi/tanda.
+  function bracketName(n) {
+    return /[\s\[\]]/.test(n) ? `[${n}]` : n;
+  }
+
+  // Susun rumus variabel dari filter yang sedang aktif: agregat atas kolom
+  // angka, dengan kondisi nilai:kolom dari filter teks/selection yang terisi.
+  // Contoh: sum([jumlah][Bawang merah:Jenis barang; in:Arus]).
+  function composeVarFormula(aggFn, numColId) {
+    const numCol = columns.find((c) => c.id === numColId);
+    if (!numCol) return '';
+    const conds = [];
+    for (const c of columns) {
+      const f = filters[c.id];
+      if ((c.type === 'string' || c.type === 'selection') && typeof f === 'string' && f) {
+        conds.push(`${f}:${bracketName(c.name)}`);
+      }
+    }
+    const colPart = bracketName(numCol.name);
+    return conds.length ? `${aggFn}(${colPart}[${conds.join('; ')}])` : `${aggFn}(${colPart})`;
+  }
+
+  // Jadikan filter yang sedang aktif sebagai variabel tersimpan.
+  async function simpanVariabelDariFilter(e) {
+    e.preventDefault();
+    const formula = composeVarFormula(varAggFn, varNumCol);
+    if (!formula) { setVarMsg('Pilih dulu kolom angka untuk variabel ini.'); return; }
+    setAggBusy(true);
+    setVarMsg('');
+    try {
+      const res = await fetch('/api/aggregates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: varName, formula }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan variabel.');
+      setSavedAggs(j.aggregates);
+      setVarName('');
+      setVarMsg(`Variabel "${j.added.name}" disimpan: ${j.added.formula}`);
+    } catch (err) {
+      setVarMsg(err.message);
+    } finally {
+      setAggBusy(false);
+    }
+  }
+
+  // Ringkasan per kolom angka atas baris yang tampil (filter aktif):
+  // jumlah data, sum, rata-rata, median.
+  const colStats = useMemo(() => {
+    const out = {};
+    for (const c of numericCols) {
+      const vals = sortedFilteredRows
+        .map((r) => Number(r.values[c.id]))
+        .filter((n) => Number.isFinite(n));
+      const sum = vals.reduce((a, b) => a + b, 0);
+      const sorted = [...vals].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const median = sorted.length === 0 ? null : sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      out[c.id] = { n: vals.length, sum, avg: vals.length ? sum / vals.length : null, median };
+    }
+    return out;
+  }, [numericCols, sortedFilteredRows]);
+
   const chartData = useMemo(() => {
     if (chartY.length === 0) return [];
     if (chartX === 'tanggal') {
@@ -670,10 +819,24 @@ export default function Home() {
     });
   }
 
-  // Kontrol filter per kolom: string = dropdown nilai unik, tanggal = rentang
-  // tanggal, int/double/rumus = rentang angka.
+  // Kontrol filter per kolom: string/selection = dropdown nilai,
+  // tanggal = rentang tanggal, int/double/rumus = rentang angka.
   function filterControl(c) {
     const f = filters[c.id];
+    if (c.type === 'selection') {
+      const opts = (c.options || []).map((o) => o.value);
+      return (
+        <div className="field" style={{ flex: '0 0 200px' }} key={c.id}>
+          <label>{c.name}</label>
+          <select value={typeof f === 'string' ? f : ''} onChange={(e) => setFilters((p) => ({ ...p, [c.id]: e.target.value }))}>
+            <option value="">Semua {c.name}</option>
+            {opts.map((v) => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
+        </div>
+      );
+    }
     if (c.type === 'string') {
       return (
         <div className="field" style={{ flex: '0 0 200px' }} key={c.id}>
@@ -798,6 +961,20 @@ export default function Home() {
         </div>
       );
     }
+    if (c.type === 'selection') {
+      const opts = c.options || [];
+      return (
+        <div className="field" key={c.id}>
+          <label>{c.name} <span className="type">({c.type})</span></label>
+          <select value={form[c.id] ?? ''} onChange={(e) => handleStringInput(c, e.target.value, form, setForm)}>
+            <option value="">— pilih —</option>
+            {opts.map((o) => (
+              <option key={o.value} value={o.value}>{o.value}</option>
+            ))}
+          </select>
+        </div>
+      );
+    }
     return (
       <div className="field" key={c.id}>
         <label>{c.name} <span className="type">({c.type})</span></label>
@@ -814,6 +991,15 @@ export default function Home() {
 
   function cellValue(c, r) {
     if (c.type === 'tanggal') return fmtDate(r.values.tanggal);
+    if (c.type === 'selection') {
+      const v = r.values[c.id] ?? '';
+      if (!v) return '';
+      const opt = (c.options || []).find((o) => o.value === v);
+      const bg = opt?.color || '#5d6d7e';
+      return (
+        <span style={{ display: 'inline-block', background: bg, color: textOn(bg), borderRadius: 999, padding: '2px 10px', fontSize: 12, fontWeight: 600 }}>{v}</span>
+      );
+    }
     if (c.type === 'string') return r.values[c.id] ?? '';
     return fmtNum(r.values[c.id]);
   }
@@ -1089,6 +1275,95 @@ export default function Home() {
                   <button className="ghost" onClick={() => downloadTable('xlsx')} disabled={sortedFilteredRows.length === 0}>Excel</button>
                   <button className="ghost" onClick={() => downloadTable('pdf')} disabled={sortedFilteredRows.length === 0}>PDF</button>
                 </div>
+                <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
+                  <h2 style={{ fontSize: 16 }}>Ringkasan Kolom Angka</h2>
+                  <p className="sub">Dihitung dari baris yang tampil (filter aktif). Sum = jumlah, Rata-rata, Median = nilai tengah.</p>
+                  {numericCols.length === 0 ? (
+                    <p className="empty">Belum ada kolom angka.</p>
+                  ) : (
+                    <div className="tablewrap">
+                      <table>
+                        <thead>
+                          <tr><th>Kolom</th><th className="num">Jumlah data</th><th className="num">Sum</th><th className="num">Rata-rata</th><th className="num">Median</th></tr>
+                        </thead>
+                        <tbody>
+                          {numericCols.map((c) => {
+                            const st = colStats[c.id] || { n: 0, sum: 0, avg: null, median: null };
+                            return (
+                              <tr key={c.id}>
+                                <td>{c.name}</td>
+                                <td className="num">{st.n}</td>
+                                <td className="num">{fmtNum(st.sum)}</td>
+                                <td className="num">{st.avg === null ? '—' : fmtNum(Math.round(st.avg * 100) / 100)}</td>
+                                <td className="num">{st.median === null ? '—' : fmtNum(st.median)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+                <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
+                  <h2 style={{ fontSize: 16 }}>Variabel</h2>
+                  <p className="sub">Variabel = rumus tersimpan atas <b>seluruh data</b> (bukan hanya baris yang tampil). Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>.</p>
+                  <form onSubmit={simpanAggregate} className="row">
+                    <div className="field" style={{ flex: '0 0 200px' }}>
+                      <label>Nama variabel</label>
+                      <input value={aggName} onChange={(e) => setAggName(e.target.value)} placeholder="mis. Stok Bawang" />
+                    </div>
+                    <div className="field" style={{ flex: '1 1 320px' }}>
+                      <label>Rumus</label>
+                      <input value={aggFormula} onChange={(e) => setAggFormula(e.target.value)} placeholder="sum([jumlah][Bawang merah:Jenis barang; in:Arus]) - sum([jumlah][Bawang merah:Jenis barang; out:Arus])" />
+                    </div>
+                    <button type="submit" className="primary" disabled={aggBusy || !aggName.trim() || !aggFormula.trim()}>{aggBusy ? 'Menyimpan…' : 'Simpan variabel'}</button>
+                  </form>
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <span className="legend">Atau isi rumus dari filter yang sedang aktif:</span>
+                    <select value={varNumCol} onChange={(e) => setVarNumCol(e.target.value)} style={{ flex: '0 0 180px' }}>
+                      <option value="">Pilih kolom angka…</option>
+                      {numericCols.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    <select value={varAggFn} onChange={(e) => setVarAggFn(e.target.value)} style={{ flex: '0 0 120px' }}>
+                      <option value="sum">sum</option>
+                      <option value="avg">avg</option>
+                      <option value="median">median</option>
+                      <option value="count">count</option>
+                      <option value="min">min</option>
+                      <option value="max">max</option>
+                    </select>
+                    <button type="button" className="ghost" onClick={() => setAggFormula(composeVarFormula(varAggFn, varNumCol))} disabled={!varNumCol}>Isi dari filter</button>
+                  </div>
+                  {aggFormula.trim() && (() => {
+                    const res = evalAggregate(aggFormula, columns, rows, savedAggs);
+                    return res.error
+                      ? <p className="msg err">{res.error}</p>
+                      : <p className="msg">Hasil sekarang (seluruh data): <b>{fmtNum(Math.round(res.value * 100) / 100)}</b></p>;
+                  })()}
+                  {aggMsg && <p className="msg">{aggMsg}</p>}
+                  {savedAggs.length > 0 && (
+                    <div className="tablewrap" style={{ marginTop: 12 }}>
+                      <table>
+                        <thead><tr><th>Nama</th><th>Rumus</th><th className="num">Nilai (seluruh data)</th><th></th></tr></thead>
+                        <tbody>
+                          {savedAggs.map((a) => {
+                            const res = evalAggregate(a.formula, columns, rows, savedAggs);
+                            return (
+                              <tr key={a.id}>
+                                <td>{a.name}</td>
+                                <td><code>{a.formula}</code></td>
+                                <td className="num">{res.error ? <span style={{ color: '#c0392b' }}>{res.error}</span> : <b>{fmtNum(Math.round(res.value * 100) / 100)}</b>}</td>
+                                <td><button className="danger" onClick={() => hapusAggregate(a.id)}>Hapus</button></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
                 {msg && <p className="msg">{msg}</p>}
               </div>
             )}
@@ -1107,6 +1382,39 @@ export default function Home() {
                 <div className="row" style={{ marginTop: 12 }}>
                   <button className="ghost" onClick={() => setFilters({})} disabled={Object.keys(filters).length === 0}>Reset filter</button>
                   <span className="legend">Menampilkan {filteredRows.length} dari {rows.length} baris.</span>
+                </div>
+                <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
+                  <h2 style={{ fontSize: 16 }}>Jadikan Variabel</h2>
+                  <p className="sub">Simpan filter yang sedang aktif sebagai variabel stok — mis. filter Jenis barang = Bawang merah + Arus = in, kolom jumlah, sum → variabel &quot;Bawang In&quot;. Nilai variabel selalu dihitung dari seluruh data, jadi tetap benar walau filternya diubah nanti. Variabel bisa dipakai di rumus lain dengan [Nama Variabel].</p>
+                  <form onSubmit={simpanVariabelDariFilter} className="row">
+                    <div className="field" style={{ flex: '0 0 200px' }}>
+                      <label>Nama variabel</label>
+                      <input value={varName} onChange={(e) => setVarName(e.target.value)} placeholder="mis. Bawang In" />
+                    </div>
+                    <div className="field" style={{ flex: '0 0 180px' }}>
+                      <label>Kolom angka</label>
+                      <select value={varNumCol} onChange={(e) => setVarNumCol(e.target.value)}>
+                        <option value="">Pilih kolom…</option>
+                        {numericCols.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="field" style={{ flex: '0 0 120px' }}>
+                      <label>Fungsi</label>
+                      <select value={varAggFn} onChange={(e) => setVarAggFn(e.target.value)}>
+                        <option value="sum">sum</option>
+                        <option value="avg">avg</option>
+                        <option value="median">median</option>
+                        <option value="count">count</option>
+                        <option value="min">min</option>
+                        <option value="max">max</option>
+                      </select>
+                    </div>
+                    <button type="submit" className="primary" disabled={aggBusy || !varName.trim() || !varNumCol}>Simpan sebagai variabel</button>
+                  </form>
+                  {varNumCol && <p className="legend">Rumus yang akan disimpan: <code>{composeVarFormula(varAggFn, varNumCol)}</code></p>}
+                  {varMsg && <p className="msg">{varMsg}</p>}
                 </div>
               </div>
             )}
@@ -1324,11 +1632,40 @@ export default function Home() {
                         <option value="int">int (bilangan bulat)</option>
                         <option value="double">double (desimal)</option>
                         <option value="string">string (teks)</option>
+                        <option value="selection">selection (pilihan + warna)</option>
                         <option value="rumus">rumus (hitung otomatis)</option>
                       </select>
                     </div>
                     <button type="submit" disabled={colBusy}>{colBusy ? 'Menambah…' : 'Tambah kolom'}</button>
                   </form>
+                  {colType === 'selection' && (
+                    <div style={{ marginTop: 14 }}>
+                      <p className="legend" style={{ marginTop: 8 }}>Pilihan + warna untuk kolom ini (mis. in = hijau, out = merah). Saat input baris, kolom ini jadi dropdown dan nilainya tampil berwarna di tabel.</p>
+                      {selOptions.map((o, idx) => (
+                        <div className="row" key={idx} style={{ marginBottom: 8 }}>
+                          <div className="field" style={{ flex: '1 1 200px' }}>
+                            <label>Pilihan {idx + 1}</label>
+                            <input
+                              value={o.value}
+                              onChange={(e) => setSelOptions((p) => p.map((x, i) => (i === idx ? { ...x, value: e.target.value } : x)))}
+                              placeholder="mis. in"
+                            />
+                          </div>
+                          <div className="field" style={{ flex: '0 0 90px' }}>
+                            <label>Warna</label>
+                            <input
+                              type="color"
+                              value={o.color}
+                              onChange={(e) => setSelOptions((p) => p.map((x, i) => (i === idx ? { ...x, color: e.target.value } : x)))}
+                              style={{ height: 38, padding: 2 }}
+                            />
+                          </div>
+                          <button type="button" className="ghost" onClick={() => setSelOptions((p) => p.filter((_, i) => i !== idx))} disabled={selOptions.length <= 1}>Hapus</button>
+                        </div>
+                      ))}
+                      <button type="button" className="ghost" onClick={() => setSelOptions((p) => [...p, { value: '', color: SELECTION_COLORS[p.length % SELECTION_COLORS.length].bg }])} disabled={selOptions.length >= 20}>+ Tambah pilihan</button>
+                    </div>
+                  )}
                   {colType === 'rumus' && (
                     <div style={{ marginTop: 14 }}>
                       <div className="field">
@@ -1339,12 +1676,15 @@ export default function Home() {
                           placeholder="[Harga] * [Jumlah Barang]"
                         />
                       </div>
-                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus:</p>
+                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>.</p>
                       <div>
                         {numericCols.map((c) => (
                           <button key={c.id} type="button" className="chip" onClick={() => setFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
                         ))}
-                        {numericCols.length === 0 && <span className="legend">Belum ada kolom angka — buat dulu kolom int/double.</span>}
+                        {savedAggs.map((a) => (
+                          <button key={a.id} type="button" className="chip" onClick={() => setFormulaText((p) => `${p}[${a.name}]`)} title={`Variabel: ${a.formula}`}>{a.name} (variabel)</button>
+                        ))}
+                        {numericCols.length === 0 && savedAggs.length === 0 && <span className="legend">Belum ada kolom angka — buat dulu kolom int/double.</span>}
                       </div>
                       <p className="legend">Contoh: kolom Total dari Harga dikali Jumlah Barang → <b>[Harga] * [Jumlah Barang]</b>. Operator yang bisa dipakai: + − * / % ^ dan ( ).</p>
                     </div>
