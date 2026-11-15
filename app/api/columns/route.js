@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getData, saveSchema, saveRows, getJob, clearPredictJob, getSession, computeFormulas, getAggregates, recomputeAllRows } from '../kv';
 import { validateFormula, formulaRefIds } from '../formula';
 import { aggregateRefIds } from '../../lib/aggregate';
+import { isValidOrder } from '../../lib/columns';
 
 const TYPES = { string: '', int: 0, double: 0, rumus: null, selection: '' };
 
@@ -105,6 +106,28 @@ export async function PUT(req) {
     await saveSchema(newColumns);
     await saveRows(newRows);
     return NextResponse.json({ columns: newColumns, rows: newRows, updated: { ...col, formula } });
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+// Ubah urutan kolom (drag and drop judul kolom di tabel). Hanya urutan
+// yang berubah — nilai baris dan rumus tidak dihitung ulang karena semua
+// pengenal berbasis id kolom, bukan posisi.
+export async function PATCH(req) {
+  try {
+    const auth = await requireLogistik(req);
+    if (auth.error) return auth.error;
+    const body = await req.json();
+    const order = body.order;
+    const { columns, rows } = await getData();
+    if (!isValidOrder(order, columns)) {
+      return NextResponse.json({ error: 'Urutan kolom tidak valid — harus memuat semua kolom tepat satu kali.' }, { status: 400 });
+    }
+    const byId = new Map(columns.map((c) => [c.id, c]));
+    const newColumns = order.map((id) => byId.get(id));
+    await saveSchema(newColumns);
+    return NextResponse.json({ columns: newColumns, rows });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
