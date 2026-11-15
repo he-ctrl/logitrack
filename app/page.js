@@ -309,10 +309,17 @@ export default function Home() {
         const dow = d.getDay();
         const weekend = dow === 0 || dow === 6;
         const val = Math.round(110 + (weekend ? -25 : 25) + 18 * Math.sin(i / 2.2) + (i % 3) * 7);
+        // Kirim SEMUA kolom (angka lain = 0, string = kosong) — API menolak
+        // baris kalau ada kolom int/double yang tidak dikirim.
+        const values = { tanggal: d.toISOString() };
+        for (const c of cols) {
+          if (c.type === 'tanggal') continue;
+          values[c.id] = c.id === jumlahId ? val : (c.type === 'string' ? '' : 0);
+        }
         await fetch('/api/rows', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ values: { tanggal: d.toISOString(), [jumlahId]: val } }),
+          body: JSON.stringify({ values }),
         });
       }
       await loadData();
