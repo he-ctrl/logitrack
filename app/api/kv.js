@@ -165,6 +165,51 @@ export function computeFormulas(columns, values, resolveVar, varNames = [], rowC
     }
     return sum;
   };
+  // Fungsi agregat di rumus per-baris (sum/avg/count/min/max/median):
+  // hitung atas SEMUA baris; kondisi INI memakai nilai kolom baris ini.
+  // Perbandingan kondisi tanpa peduli huruf besar/kecil dan spasi.
+  const aggregateFn = (fn, qtyName, conds) => {
+    if (!rowCtx) throw new Error(`${fn.toUpperCase()} hanya bisa dihitung dari data tabel (saat menyimpan baris).`);
+    const qtyCol = byName.get(String(qtyName).toLowerCase());
+    if (!qtyCol) return null;
+    const condCols = conds.map((c) => ({ value: c.value, col: byName.get(String(c.column).toLowerCase()) }));
+    if (condCols.some((c) => !c.col)) return null;
+    const cellEq = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+    const matches = (rv) => condCols.every(({ value, col }) => {
+      const want = String(value).toLowerCase() === 'ini' ? out[col.id] : value;
+      return cellEq(rv[col.id], want);
+    });
+    let matched = 0;
+    const nums = [];
+    for (let j = 0; j < rowCtx.rows.length; j++) {
+      const rv = j === rowCtx.index ? out : rowCtx.rows[j];
+      if (!matches(rv)) continue;
+      matched++;
+      const v = rv[qtyCol.id];
+      const n = Number(v);
+      if (v !== null && v !== undefined && v !== '' && Number.isFinite(n)) nums.push(n);
+    }
+    switch (fn) {
+      case 'sum': return nums.reduce((a, b) => a + b, 0);
+      case 'count': return matched;
+      case 'avg':
+        if (nums.length === 0) throw new Error('Tidak ada data yang cocok untuk dihitung rata-ratanya.');
+        return nums.reduce((a, b) => a + b, 0) / nums.length;
+      case 'median': {
+        if (nums.length === 0) throw new Error('Tidak ada data yang cocok untuk dihitung mediannya.');
+        const s = [...nums].sort((a, b) => a - b);
+        const mid = Math.floor(s.length / 2);
+        return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+      }
+      case 'min':
+        if (nums.length === 0) throw new Error('Tidak ada data yang cocok.');
+        return Math.min(...nums);
+      case 'max':
+        if (nums.length === 0) throw new Error('Tidak ada data yang cocok.');
+        return Math.max(...nums);
+      default: throw new Error('Fungsi agregat tidak dikenal.');
+    }
+  };
   for (const col of columns) {
     if (col.type !== 'rumus') continue;
     if (!col.formula) {
@@ -182,7 +227,7 @@ export function computeFormulas(columns, values, resolveVar, varNames = [], rowC
         return typeof v === 'number' && Number.isFinite(v) ? v : null;
       }
       return null;
-    }, knownNames, { running });
+    }, knownNames, { running, aggregate: aggregateFn });
     if (res.error) {
       out[col.id] = null;
       errors.push({ column: col.name, error: res.error });
