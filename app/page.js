@@ -717,23 +717,6 @@ export default function Home() {
     }
   }
 
-  // Ringkasan per kolom angka atas baris yang tampil (filter aktif):
-  // jumlah data, sum, rata-rata, median.
-  const colStats = useMemo(() => {
-    const out = {};
-    for (const c of numericCols) {
-      const vals = sortedFilteredRows
-        .map((r) => Number(r.values[c.id]))
-        .filter((n) => Number.isFinite(n));
-      const sum = vals.reduce((a, b) => a + b, 0);
-      const sorted = [...vals].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      const median = sorted.length === 0 ? null : sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-      out[c.id] = { n: vals.length, sum, avg: vals.length ? sum / vals.length : null, median };
-    }
-    return out;
-  }, [numericCols, sortedFilteredRows]);
-
   const chartData = useMemo(() => {
     if (chartY.length === 0) return [];
     if (chartX === 'tanggal') {
@@ -1274,35 +1257,6 @@ export default function Home() {
                   <button className="ghost" onClick={() => downloadTable('csv')} disabled={sortedFilteredRows.length === 0}>CSV</button>
                   <button className="ghost" onClick={() => downloadTable('xlsx')} disabled={sortedFilteredRows.length === 0}>Excel</button>
                   <button className="ghost" onClick={() => downloadTable('pdf')} disabled={sortedFilteredRows.length === 0}>PDF</button>
-                </div>
-                <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
-                  <h2 style={{ fontSize: 16 }}>Ringkasan Kolom Angka</h2>
-                  <p className="sub">Dihitung dari baris yang tampil (filter aktif). Sum = jumlah, Rata-rata, Median = nilai tengah.</p>
-                  {numericCols.length === 0 ? (
-                    <p className="empty">Belum ada kolom angka.</p>
-                  ) : (
-                    <div className="tablewrap">
-                      <table>
-                        <thead>
-                          <tr><th>Kolom</th><th className="num">Jumlah data</th><th className="num">Sum</th><th className="num">Rata-rata</th><th className="num">Median</th></tr>
-                        </thead>
-                        <tbody>
-                          {numericCols.map((c) => {
-                            const st = colStats[c.id] || { n: 0, sum: 0, avg: null, median: null };
-                            return (
-                              <tr key={c.id}>
-                                <td>{c.name}</td>
-                                <td className="num">{st.n}</td>
-                                <td className="num">{fmtNum(st.sum)}</td>
-                                <td className="num">{st.avg === null ? '—' : fmtNum(Math.round(st.avg * 100) / 100)}</td>
-                                <td className="num">{st.median === null ? '—' : fmtNum(st.median)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
                 </div>
                 <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
                   <h2 style={{ fontSize: 16 }}>Variabel</h2>
