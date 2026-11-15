@@ -14,6 +14,11 @@
 //   [Nama Variabel]                 nilai variabel lain (boleh dipakai di
 //     dalam rumus, tidak boleh di dalam sum/avg/... — pakai langsung).
 //   Operator + - * / % ^ dan ( ), urutan hitung PEMDAS, boleh unary minus.
+//   IF ala Excel: IF(kondisi, jika_benar, jika_salah) — alias JIKA;
+//   kondisi memakai perbandingan > < >= <= = <> (!=, ==); bisa bersarang:
+//   IF(A, 1, IF(B, 2, 3)). AND/OR/NOT juga ada (alias DAN/ATAU/TIDAK).
+//   Variabel IF menghitung dari SEMUA baris yang diberikan (konteks agregat);
+//   di kolom rumus per-baris, IF menghitung dari baris itu sendiri.
 //   Nama kolom/variabel yang mengandung spasi boleh ditulis polos tanpa
 //   [tanda kurung siku] bila namanya sudah dikenal (mis. Wortel stok) —
 //   parser mencocokkan nama terpanjang yang dikenal; bila tidak dikenal,
@@ -192,7 +197,7 @@ function makeParser(src, columns, variables) {
     const ch = s[i];
     if (ch === '(') {
       i++;
-      const node = parseExpr();
+      const node = parseComparison();
       expect(')');
       return node;
     }
@@ -205,13 +210,55 @@ function makeParser(src, columns, variables) {
     skipWs();
     if (s[i] === '(') {
       const fn = id.toLowerCase();
-      if (!FUNCS.has(fn)) parseError(`Fungsi "${id}" tidak dikenal. Yang bisa dipakai: sum, avg, median, count, min, max.`);
+      if (fn === 'if' || fn === 'jika') {
+        i++;
+        const cond = parseComparison();
+        expect(',');
+        const a = parseComparison();
+        expect(',');
+        const b = parseComparison();
+        expect(')');
+        return { type: 'if', cond, then: a, else: b };
+      }
+      if (fn === 'and' || fn === 'dan' || fn === 'or' || fn === 'atau') {
+        i++;
+        const args = [parseComparison()];
+        for (;;) {
+          skipWs();
+          if (s[i] === ',') { i++; args.push(parseComparison()); continue; }
+          break;
+        }
+        expect(')');
+        return { type: fn === 'and' || fn === 'dan' ? 'and' : 'or', args };
+      }
+      if (fn === 'not' || fn === 'tidak') {
+        i++;
+        const arg = parseComparison();
+        expect(')');
+        return { type: 'not', arg };
+      }
+      if (!FUNCS.has(fn)) parseError(`Fungsi "${id}" tidak dikenal. Yang bisa dipakai: sum, avg, median, count, min, max, IF, AND, OR, NOT.`);
       i++; // lewati '('
       const ref = readRef();
       expect(')');
       return { type: 'fn', fn, ref };
     }
     return readVarOrFail(id);
+  }
+  // Perbandingan — level terendah, di atas parseExpr.
+  function parseComparison() {
+    let node = parseExpr();
+    skipWs();
+    const ops = ['>=', '<=', '<>', '!=', '==', '>', '<', '='];
+    for (const op of ops) {
+      if (s.startsWith(op, i)) {
+        i += op.length;
+        const right = parseExpr();
+        node = { type: 'cmp', op, left: node, right };
+        break;
+      }
+    }
+    return node;
   }
   function parsePower() {
     const left = parsePrimary();
@@ -254,7 +301,7 @@ function makeParser(src, columns, variables) {
 
   function parse() {
     if (!s.trim()) parseError('Rumus masih kosong.');
-    const node = parseExpr();
+    const node = parseComparison();
     skipWs();
     if (i < s.length) parseError(`Karakter tidak dikenal "${s[i]}" di posisi ${i + 1}.`);
     return node;
@@ -280,6 +327,10 @@ function checkNode(node, columns, variables, visiting) {
   if (node.type === 'num') return;
   if (node.type === 'neg') { checkNode(node.node, columns, variables, visiting); return; }
   if (node.type === 'bin') { checkNode(node.left, columns, variables, visiting); checkNode(node.right, columns, variables, visiting); return; }
+  if (node.type === 'cmp') { checkNode(node.left, columns, variables, visiting); checkNode(node.right, columns, variables, visiting); return; }
+  if (node.type === 'if') { checkNode(node.cond, columns, variables, visiting); checkNode(node.then, columns, variables, visiting); checkNode(node.else, columns, variables, visiting); return; }
+  if (node.type === 'and' || node.type === 'or') { node.args.forEach((a) => checkNode(a, columns, variables, visiting)); return; }
+  if (node.type === 'not') { checkNode(node.arg, columns, variables, visiting); return; }
   if (node.type === 'fn') {
     const target = resolveColumn(node.ref.col, columns);
     if (!target) parseError(`Kolom "${node.ref.col}" tidak ditemukan.`);
@@ -339,12 +390,23 @@ function matchingValues(ref, columns, rows) {
   return { matched: matched.length, nums };
 }
 
+function truthyAgg(v) {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  throw new Error('Kondisi IF harus berupa perbandingan atau angka.');
+}
+
 function evalNode(node, columns, rows, variables, ctx) {
   if (node.type === 'num') return node.value;
-  if (node.type === 'neg') return -evalNode(node.node, columns, rows, variables, ctx);
+  if (node.type === 'neg') {
+    const v = evalNode(node.node, columns, rows, variables, ctx);
+    if (typeof v !== 'number') throw new Error('Hasil perbandingan (benar/salah) tidak bisa langsung dihitung — pakai IF(...) untuk mengubahnya jadi angka.');
+    return -v;
+  }
   if (node.type === 'bin') {
     const a = evalNode(node.left, columns, rows, variables, ctx);
     const b = evalNode(node.right, columns, rows, variables, ctx);
+    if (typeof a !== 'number' || typeof b !== 'number') throw new Error('Hasil perbandingan (benar/salah) tidak bisa langsung dihitung — pakai IF(...) untuk mengubahnya jadi angka.');
     switch (node.op) {
       case '+': return a + b;
       case '-': return a - b;
@@ -359,6 +421,31 @@ function evalNode(node, columns, rows, variables, ctx) {
       default: throw new Error('Operator tidak dikenal.');
     }
   }
+  if (node.type === 'cmp') {
+    const a = evalNode(node.left, columns, rows, variables, ctx);
+    const b = evalNode(node.right, columns, rows, variables, ctx);
+    if (typeof a !== 'number' || typeof b !== 'number') throw new Error('Perbandingan hanya bisa membandingkan angka.');
+    switch (node.op) {
+      case '>': return a > b;
+      case '<': return a < b;
+      case '>=': return a >= b;
+      case '<=': return a <= b;
+      case '=':
+      case '==': return a === b;
+      case '<>':
+      case '!=': return a !== b;
+      default: throw new Error('Operator perbandingan tidak dikenal.');
+    }
+  }
+  if (node.type === 'if') {
+    const c = evalNode(node.cond, columns, rows, variables, ctx);
+    const v = evalNode(truthyAgg(c) ? node.then : node.else, columns, rows, variables, ctx);
+    if (typeof v !== 'number') throw new Error('Hasil IF harus berupa angka — pakai IF(...) untuk mengubah benar/salah jadi angka.');
+    return v;
+  }
+  if (node.type === 'and') return node.args.every((a) => truthyAgg(evalNode(a, columns, rows, variables, ctx)));
+  if (node.type === 'or') return node.args.some((a) => truthyAgg(evalNode(a, columns, rows, variables, ctx)));
+  if (node.type === 'not') return !truthyAgg(evalNode(node.arg, columns, rows, variables, ctx));
   if (node.type === 'var') {
     const key = node.name.toLowerCase();
     if (ctx.cache.has(key)) return ctx.cache.get(key);
@@ -426,9 +513,17 @@ export function aggregateRefIds(formula, columns, variables = []) {
       } catch (e) { /* abaikan rumus rusak */ }
     } else if (node.type === 'neg') {
       walk(node.node);
-    } else if (node.type === 'bin') {
+    } else if (node.type === 'bin' || node.type === 'cmp') {
       walk(node.left);
       walk(node.right);
+    } else if (node.type === 'if') {
+      walk(node.cond);
+      walk(node.then);
+      walk(node.else);
+    } else if (node.type === 'and' || node.type === 'or') {
+      node.args.forEach(walk);
+    } else if (node.type === 'not') {
+      walk(node.arg);
     }
   }
   try {
