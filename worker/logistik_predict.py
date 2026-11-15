@@ -132,7 +132,7 @@ def process_job(url, token, forecaster, job):
     filters = {}
     for k, v in raw_filters.items():
         t = col_types.get(k)
-        if t == "string":
+        if t in ("string", "selection"):
             if str(v) != "":
                 filters[k] = str(v)
         elif t == "tanggal" and isinstance(v, dict):
@@ -156,7 +156,7 @@ def process_job(url, token, forecaster, job):
             vals = r.get("values") or {}
             for k, f in filters.items():
                 t = col_types.get(k)
-                if t == "string":
+                if t in ("string", "selection"):
                     if str(vals.get(k, "")) != f:
                         return False
                 elif t == "tanggal":
