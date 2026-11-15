@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getData, saveSchema, saveRows } from '../kv';
+import { getData, saveSchema, saveRows, getJob, clearPredictJob } from '../kv';
 
 const TYPES = { string: '', int: 0, double: 0 };
 
@@ -28,6 +28,38 @@ export async function POST(req) {
     await saveSchema(newColumns);
     await saveRows(newRows);
     return NextResponse.json({ columns: newColumns, rows: newRows, added: col });
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+    if (!id) return NextResponse.json({ error: 'id kolom wajib diisi.' }, { status: 400 });
+
+    const { columns, rows } = await getData();
+    const col = columns.find((c) => c.id === id);
+    if (!col) return NextResponse.json({ error: 'Kolom tidak ditemukan.' }, { status: 404 });
+    if (col.type === 'tanggal') {
+      return NextResponse.json({ error: 'Kolom Tanggal tidak bisa dihapus.' }, { status: 400 });
+    }
+    const newColumns = columns.filter((c) => c.id !== id);
+    // Nilai kolom yang dihapus ikut dibuang dari semua baris.
+    const newRows = rows.map((r) => {
+      const values = { ...r.values };
+      delete values[id];
+      return { ...r, values };
+    });
+    await saveSchema(newColumns);
+    await saveRows(newRows);
+    // Hapus hasil prediksi yang memakai kolom ini supaya tidak tampil usang.
+    const job = await getJob();
+    if (job && (job.columns === 'all' || (Array.isArray(job.columns) && job.columns.includes(id)))) {
+      await clearPredictJob();
+    }
+    return NextResponse.json({ columns: newColumns, rows: newRows, deleted: col });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
