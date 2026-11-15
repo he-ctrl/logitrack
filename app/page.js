@@ -1047,6 +1047,10 @@ export default function Home() {
     seen.add(c.id);
     const res = evalFormula(c.formula, (name) => {
       const key = name.toLowerCase();
+      if (key.startsWith('ini:')) {
+        const col = columns.find((cc) => cc.name.toLowerCase() === key.slice(4).trim());
+        return col ? (r.values[col.id] ?? null) : null;
+      }
       const col = columns.find((cc) => cc.name.toLowerCase() === key);
       if (col) {
         if (col.type === 'rumus' && col.formula) {
@@ -1742,11 +1746,12 @@ export default function Home() {
                           placeholder="[Harga] * [Jumlah Barang]"
                         />
                       </div>
-                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>. Nama boleh juga diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja. Ada <b>IF</b> ala Excel: <b>IF([Stok Bawang] &gt; 0, [Stok Bawang], 0)</b> — kondisi di IF memakai baris itu sendiri, bisa bersarang, plus AND/OR/NOT. Ada <b>STOK</b> buat stok berjalan per barang: <b>STOK([jumlah], [Jenis barang], [Status])</b> — jumlah sampai baris ini, in nambah, out ngurangin. Ada <b>sum/avg/count/min/max</b> atas semua baris: <b>sum([jumlah][INI:Jenis barang; in:Status])</b> — total barang yang sama dengan baris ini dan statusnya in; INI = nilai kolom dari baris itu sendiri.</p>
+                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>. Nama boleh juga diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja. Ada <b>IF</b> ala Excel: <b>IF([Stok Bawang] &gt; 0, [Stok Bawang], 0)</b> — kondisi di IF memakai baris itu sendiri, bisa bersarang, plus AND/OR/NOT. Ada <b>STOK</b> buat stok berjalan per barang: <b>STOK([jumlah], [Jenis barang], [Status])</b> — jumlah sampai baris ini, in nambah, out ngurangin. Ada <b>sum/avg/count/min/max</b> atas semua baris: <b>sum([jumlah][INI:Jenis barang; in:Status])</b> — total barang yang sama dengan baris ini dan statusnya in; INI = nilai kolom dari baris itu sendiri. <b>[INI:Kolom]</b> juga bisa dipakai langsung di rumus — mis. <b>IF([INI:Status] = in, ..., ...)</b> buat logika per baris; teks ditulis polos (in, out) atau pakai kutip (&quot;Bawang merah&quot;).</p>
                       <div>
                         <button type="button" className="chip" onClick={() => setFormulaText((p) => `${p}IF(, , )`)} title="IF(kondisi, jika benar, jika salah) — bisa bersarang">IF(...)</button>
                         <button type="button" className="chip" onClick={() => setFormulaText((p) => `${p}STOK(, , )`)} title="STOK([jumlah], [Jenis barang], [Status]) — stok berjalan per barang sampai baris ini">STOK(...)</button>
                         <button type="button" className="chip" onClick={() => setFormulaText((p) => `${p}sum([jumlah][INI:Jenis barang; in:Status])`)} title="sum([jumlah][INI:Jenis barang; in:Status]) — total barang yang sama dengan baris ini">sum INI</button>
+                        <button type="button" className="chip" onClick={() => setFormulaText((p) => `${p}IF([INI:Status] = in, sum([jumlah][INI:Jenis barang; in:Status]), sum([jumlah][INI:Jenis barang; in:Status]) - [INI:jumlah])`)} title="IF([INI:Status] = in, total masuk, total masuk - jumlah baris ini)">IF INI</button>
                         {numericCols.map((c) => (
                           <button key={c.id} type="button" className="chip" onClick={() => setFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
                         ))}
@@ -1788,11 +1793,12 @@ export default function Home() {
                       </div>
                       <button type="submit" disabled={!editFormulaId || formulaBusy}>{formulaBusy ? 'Menyimpan…' : 'Simpan rumus'}</button>
                     </form>
-                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom/variabel di bawah untuk memasukkannya ke rumus (nama boleh juga diketik langsung tanpa [ ]). Ada <b>IF</b>: <b>IF([Stok Bawang] &gt; 0, [Stok Bawang], 0)</b> — kondisi memakai baris itu sendiri, bisa bersarang. Ada <b>STOK</b>: <b>STOK([jumlah], [Jenis barang], [Status])</b> — stok berjalan per barang sampai baris ini. Ada <b>sum/avg/count/min/max</b>: <b>sum([jumlah][INI:Jenis barang; in:Status])</b> — total barang yang sama dengan baris ini.</p>
+                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom/variabel di bawah untuk memasukkannya ke rumus (nama boleh juga diketik langsung tanpa [ ]). Ada <b>IF</b>: <b>IF([Stok Bawang] &gt; 0, [Stok Bawang], 0)</b> — kondisi memakai baris itu sendiri, bisa bersarang. Ada <b>STOK</b>: <b>STOK([jumlah], [Jenis barang], [Status])</b> — stok berjalan per barang sampai baris ini. Ada <b>sum/avg/count/min/max</b>: <b>sum([jumlah][INI:Jenis barang; in:Status])</b> — total barang yang sama dengan baris ini. <b>[INI:Kolom]</b> juga bisa dipakai langsung — mis. <b>IF([INI:Status] = in, ..., ...)</b>; teks ditulis polos (in, out) atau pakai kutip (&quot;Bawang merah&quot;).</p>
                     <div>
                       <button type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}IF(, , )`)} title="IF(kondisi, jika benar, jika salah) — bisa bersarang">IF(...)</button>
                       <button type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}STOK(, , )`)} title="STOK([jumlah], [Jenis barang], [Status]) — stok berjalan per barang sampai baris ini">STOK(...)</button>
                       <button type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}sum([jumlah][INI:Jenis barang; in:Status])`)} title="sum([jumlah][INI:Jenis barang; in:Status]) — total barang yang sama dengan baris ini">sum INI</button>
+                      <button type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}IF([INI:Status] = in, sum([jumlah][INI:Jenis barang; in:Status]), sum([jumlah][INI:Jenis barang; in:Status]) - [INI:jumlah])`)} title="IF([INI:Status] = in, total masuk, total masuk - jumlah baris ini)">IF INI</button>
                       {numericCols.map((c) => (
                         <button key={c.id} type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
                       ))}
