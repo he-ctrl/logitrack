@@ -1,1 +1,1 @@
-{"dependencies":{"next":"latest","react":"latest","react-dom":"latest","recharts":"^2.15.0"},"name":"logitrack","private":true,"scripts":{"build":"next build","dev":"next dev","start":"next start"},"version":"1.0.0"}
+{"dependencies":{"jspdf":"^4.2.1","jspdf-autotable":"^5.0.9","next":"latest","react":"latest","react-dom":"latest","recharts":"^2.15.0","xlsx":"^0.18.5"},"name":"logitrack","private":true,"scripts":{"build":"next build","dev":"next dev","start":"next start"},"version":"1.0.0"}
