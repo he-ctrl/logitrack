@@ -37,6 +37,20 @@ function fmtNum(v) {
   return v ?? '';
 }
 
+// Tooltip grafik: judulnya tanggal + jam lengkap, bukan cuma tanggal.
+function ChartTooltip({ active, payload, label }) {
+  if (!active || !payload || payload.length === 0) return null;
+  const full = payload[0]?.payload?.full;
+  return (
+    <div style={{ background: '#fff', border: '1px solid #dde4ea', borderRadius: 8, padding: '8px 10px', fontSize: 13, boxShadow: '0 1px 4px rgba(15,42,67,0.15)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{full ? fmtDate(full) : label}</div>
+      {payload.filter((p) => p.value !== undefined && p.value !== null).map((p) => (
+        <div key={String(p.dataKey)}><span style={{ color: p.color || p.stroke }}>●</span> {p.name}: {fmtNum(p.value)}</div>
+      ))}
+    </div>
+  );
+}
+
 export default function Home() {
   const [columns, setColumns] = useState([]);
   const [rows, setRows] = useState([]);
@@ -65,7 +79,51 @@ export default function Home() {
   const [predMsg, setPredMsg] = useState('');
   const [predBusy, setPredBusy] = useState(false);
 
+  // Filter kategori (kolom string): dipakai grafik & prediksi.
+  const [filters, setFilters] = useState({});
+
   const numericCols = useMemo(() => columns.filter((c) => c.type === 'int' || c.type === 'double'), [columns]);
+
+  const filterOptions = useCallback((colId) => {
+    const vals = new Set();
+    for (const r of rows) {
+      const v = String(r.values[colId] ?? '').trim();
+      if (v) vals.add(v);
+    }
+    return [...vals].sort((a, b) => a.localeCompare(b, 'id'));
+  }, [rows]);
+
+  // Baris yang lolos semua filter yang aktif (berlaku untuk tabel, grafik & prediksi).
+  // string = cocok persis, tanggal = rentang tanggal, int/double = rentang angka.
+  const filteredRows = useMemo(() => {
+    return rows.filter((r) => {
+      for (const [k, f] of Object.entries(filters)) {
+        if (f === '' || f == null) continue;
+        const col = columns.find((c) => c.id === k);
+        if (!col) continue;
+        if (col.type === 'string') {
+          if (String(r.values[k] ?? '') !== f) return false;
+        } else if (col.type === 'tanggal') {
+          const d = new Date(r.values.tanggal);
+          if (Number.isNaN(d.getTime())) return false;
+          if (f.from && d < new Date(`${f.from}T00:00:00.000Z`)) return false;
+          if (f.to && d > new Date(`${f.to}T23:59:59.999Z`)) return false;
+        } else {
+          const n = Number(r.values[k]);
+          if (Number.isNaN(n)) return false;
+          if (f.min !== '' && f.min != null && n < Number(f.min)) return false;
+          if (f.max !== '' && f.max != null && n > Number(f.max)) return false;
+        }
+      }
+      return true;
+    });
+  }, [rows, filters, columns]);
+
+  const sortedFilteredRows = useMemo(() => {
+    const copy = [...filteredRows];
+    copy.sort((a, b) => new Date(a.values.tanggal) - new Date(b.values.tanggal));
+    return copy;
+  }, [filteredRows]);
 
   const loadData = useCallback(async () => {
     try {
@@ -85,6 +143,23 @@ export default function Home() {
       setChartY((prev) => {
         const ids = j.columns.filter((c) => c.type === 'int' || c.type === 'double').map((c) => c.id);
         return prev.filter((id) => ids.includes(id));
+      });
+      // Buang filter yang nilainya sudah tidak ada di data (string) atau
+      // kolomnya sudah dihapus (semua tipe).
+      setFilters((prev) => {
+        const next = {};
+        for (const [k, v] of Object.entries(prev)) {
+          const col = j.columns.find((c) => c.id === k);
+          if (!col) continue;
+          if (col.type === 'string') {
+            if (!v) continue;
+            if (!j.rows.some((r) => String(r.values[k] ?? '') === v)) continue;
+            next[k] = v;
+          } else if (v && typeof v === 'object' && Object.values(v).some((x) => x !== '' && x != null)) {
+            next[k] = v;
+          }
+        }
+        return next;
       });
     } catch (e) {
       setError(e.message);
@@ -191,6 +266,11 @@ export default function Home() {
         return next;
       });
       setDelColId('');
+      setFilters((prev) => {
+        const next = { ...prev };
+        delete next[col.id];
+        return next;
+      });
       if (chartX === col.id) setChartX('tanggal');
       if (result && result.columns && result.columns[col.id]) {
         setResult(null);
@@ -256,6 +336,7 @@ export default function Home() {
         body: JSON.stringify({
           columns: predScope === 'all' ? 'all' : predCols,
           horizon,
+          filters: buildJobFilters(),
         }),
       });
       const j = await res.json();
@@ -278,19 +359,19 @@ export default function Home() {
   const chartData = useMemo(() => {
     if (chartY.length === 0) return [];
     if (chartX === 'tanggal') {
-      return sortedRows.map((r) => {
-        const p = { x: fmtTick(r.values.tanggal) };
+      return sortedFilteredRows.map((r) => {
+        const p = { x: fmtTick(r.values.tanggal), full: r.values.tanggal };
         for (const id of chartY) p[id] = r.values[id];
         return p;
       });
     }
-    const copy = [...rows].sort((a, b) => (a.values[chartX] ?? 0) - (b.values[chartX] ?? 0));
+    const copy = [...filteredRows].sort((a, b) => (a.values[chartX] ?? 0) - (b.values[chartX] ?? 0));
     return copy.map((r) => {
-      const p = { x: r.values[chartX] };
+      const p = { x: r.values[chartX], full: r.values.tanggal };
       for (const id of chartY) p[id] = r.values[id];
       return p;
     });
-  }, [sortedRows, rows, chartX, chartY]);
+  }, [sortedFilteredRows, filteredRows, chartX, chartY]);
 
   // Kolom hasil prediksi yang masih ada di skema (kolom yang sudah dihapus disaring).
   const predColIds = useMemo(() => {
@@ -300,24 +381,150 @@ export default function Home() {
 
   const forecastChart = useMemo(() => {
     if (!result || predColIds.length === 0) return [];
-    const pts = sortedRows.map((r) => {
-      const p = { t: fmtTick(r.values.tanggal), _sort: new Date(r.values.tanggal).getTime() };
+    const pts = sortedFilteredRows.map((r) => {
+      const p = { t: fmtTick(r.values.tanggal), full: r.values.tanggal, _sort: new Date(r.values.tanggal).getTime() };
       for (const id of predColIds) p[id] = r.values[id];
       return p;
     });
     const first = result.columns[predColIds[0]];
     if (!first) return pts;
     first.dates.forEach((iso, i) => {
-      const p = { t: fmtTick(iso), _sort: new Date(iso).getTime() };
+      const p = { t: fmtTick(iso), full: iso, _sort: new Date(iso).getTime() };
       for (const id of predColIds) p[`${id}_pred`] = result.columns[id].values[i];
       pts.push(p);
     });
     pts.sort((a, b) => a._sort - b._sort);
     return pts;
-  }, [result, sortedRows, predColIds]);
+  }, [result, sortedFilteredRows, predColIds]);
 
   function toggleY(id) {
     setChartY((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  // Titik yang diklik di grafik — ditampilkan sebagai kotak detail di bawah grafik.
+  const [selected, setSelected] = useState(null);
+
+  function handlePointClick(state, chart) {
+    if (!state || !state.activePayload || state.activePayload.length === 0) return;
+    const first = state.activePayload[0].payload;
+    setSelected({
+      chart,
+      title: first.full ? fmtDate(first.full) : state.activeLabel,
+      lines: state.activePayload
+        .filter((p) => p.value !== undefined && p.value !== null)
+        .map((p) => ({ name: p.name, value: p.value })),
+    });
+  }
+
+  function selectedBox(chart) {
+    if (!selected || selected.chart !== chart) return null;
+    return (
+      <div className="msg" style={{ background: '#eaf3fb', borderRadius: 8, padding: '10px 12px' }}>
+        <strong>{selected.title}</strong>
+        {selected.lines.map((l) => (
+          <div key={l.name}>{l.name}: {fmtNum(l.value)}</div>
+        ))}
+        <button className="ghost" style={{ marginTop: 6, padding: '4px 10px', fontSize: 12 }} onClick={() => setSelected(null)}>Tutup</button>
+      </div>
+    );
+  }
+
+  // Ubah satu filter rentang (tanggal/angka); entri dihapus kalau kosong semua.
+  function setFilterValue(colId, patch) {
+    setFilters((p) => {
+      const cur = p[colId];
+      const base = cur && typeof cur === 'object' ? cur : {};
+      const next = { ...base, ...patch };
+      const hasValue = Object.values(next).some((v) => v !== '' && v !== null && v !== undefined);
+      const out = { ...p };
+      if (hasValue) out[colId] = next;
+      else delete out[colId];
+      return out;
+    });
+  }
+
+  // Kontrol filter per kolom: string = dropdown nilai unik, tanggal = rentang
+  // tanggal, int/double = rentang angka.
+  function filterControl(c) {
+    const f = filters[c.id];
+    if (c.type === 'string') {
+      return (
+        <div className="field" style={{ flex: '0 0 200px' }} key={c.id}>
+          <label>{c.name}</label>
+          <select value={typeof f === 'string' ? f : ''} onChange={(e) => setFilters((p) => ({ ...p, [c.id]: e.target.value }))}>
+            <option value="">Semua {c.name}</option>
+            {filterOptions(c.id).map((v) => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+    if (c.type === 'tanggal') {
+      const from = (f && f.from) || '';
+      const to = (f && f.to) || '';
+      return (
+        <div className="field" style={{ flex: '0 0 320px' }} key={c.id}>
+          <label>{c.name} (rentang tanggal)</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input type="date" value={from} onChange={(e) => setFilterValue(c.id, { from: e.target.value })} />
+            <input type="date" value={to} onChange={(e) => setFilterValue(c.id, { to: e.target.value })} />
+          </div>
+        </div>
+      );
+    }
+    const min = (f && f.min) ?? '';
+    const max = (f && f.max) ?? '';
+    return (
+      <div className="field" style={{ flex: '0 0 240px' }} key={c.id}>
+        <label>{c.name} (rentang angka)</label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input type="number" step="any" placeholder="Min" value={min} onChange={(e) => setFilterValue(c.id, { min: e.target.value })} />
+          <input type="number" step="any" placeholder="Maks" value={max} onChange={(e) => setFilterValue(c.id, { max: e.target.value })} />
+        </div>
+      </div>
+    );
+  }
+
+  // Filter untuk dikirim ke API prediksi (tanggal jadi ISO lengkap).
+  function buildJobFilters() {
+    const out = {};
+    for (const [k, f] of Object.entries(filters)) {
+      if (f === '' || f == null) continue;
+      const col = columns.find((c) => c.id === k);
+      if (!col) continue;
+      if (col.type === 'string') {
+        out[k] = f;
+      } else if (col.type === 'tanggal') {
+        const o = {};
+        if (f.from) o.from = `${f.from}T00:00:00.000Z`;
+        if (f.to) o.to = `${f.to}T23:59:59.999Z`;
+        if (Object.keys(o).length) out[k] = o;
+      } else {
+        const o = {};
+        if (f.min !== '' && f.min != null) o.min = Number(f.min);
+        if (f.max !== '' && f.max != null) o.max = Number(f.max);
+        if (Object.keys(o).length) out[k] = o;
+      }
+    }
+    return out;
+  }
+
+  // Tampilkan satu filter terpakai di baris meta hasil prediksi.
+  function fmtFilter(k, v) {
+    const col = columns.find((c) => c.id === k);
+    const name = col?.name || k;
+    if (typeof v === 'string') return `${name} = ${v}`;
+    if (col?.type === 'tanggal') {
+      const parts = [];
+      if (v.from) parts.push(`dari ${fmtDate(v.from)}`);
+      if (v.to) parts.push(`sampai ${fmtDate(v.to)}`);
+      return `${name} ${parts.join(' ')}`;
+    }
+    const parts = [];
+    if (v.min != null) parts.push(`≥ ${fmtNum(v.min)}`);
+    if (v.max != null) parts.push(`≤ ${fmtNum(v.max)}`);
+    return `${name} ${parts.join(' ')}`;
   }
 
   return (
@@ -338,10 +545,26 @@ export default function Home() {
           <>
             <div className="card">
               <h2>Ringkasan</h2>
-              <p className="sub">Kolom tanggal/waktu adalah feature (sumbu waktu). Kolom angka (int/double) adalah label yang bisa digrafik dan diprediksi.</p>
+              <p className="sub">Kolom tanggal/waktu adalah feature (sumbu waktu). Kolom angka (int/double) adalah label yang bisa digrafik dan diprediksi. Semua kolom bisa difilter: tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai.</p>
               <span className="pill">{columns.length} kolom</span>{' '}
               <span className="pill">{rows.length} baris</span>{' '}
               {job && <span className={`pill ${job.status === 'done' ? 'ok' : job.status === 'error' ? 'err' : 'warn'}`}>Prediksi: {job.status}</span>}
+            </div>
+
+            <div className="card">
+              <h2>Filter Data</h2>
+              <p className="sub">Filter berlaku untuk tabel, grafik, dan prediksi. Tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai dari kolom.</p>
+              {columns.length === 0 ? (
+                <p className="empty">Belum ada kolom.</p>
+              ) : (
+                <div className="row">
+                  {columns.map((c) => filterControl(c))}
+                </div>
+              )}
+              <div className="row" style={{ marginTop: 12 }}>
+                <button className="ghost" onClick={() => setFilters({})} disabled={Object.keys(filters).length === 0}>Reset filter</button>
+                <span className="legend">Menampilkan {filteredRows.length} dari {rows.length} baris.</span>
+              </div>
             </div>
 
             <div className="card">
@@ -349,6 +572,8 @@ export default function Home() {
               <p className="sub">Baris terbaru ada di bawah. Tambah kolom baru: baris lama otomatis terisi 0 (int/double) atau kosong (string).</p>
               {rows.length === 0 ? (
                 <p className="empty">Belum ada baris. Tambahkan lewat form di bawah, atau isi data contoh untuk mencoba grafik &amp; prediksi.</p>
+              ) : sortedFilteredRows.length === 0 ? (
+                <p className="empty">Tidak ada baris yang cocok dengan filter. Ubah atau reset filter di atas.</p>
               ) : (
                 <div className="tablewrap">
                   <table>
@@ -373,7 +598,7 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {sortedRows.map((r) => (
+                      {sortedFilteredRows.map((r) => (
                         <tr key={r.id}>
                           {columns.map((c) => (
                             <td key={c.id} className={c.type === 'int' || c.type === 'double' ? 'num' : ''}>
@@ -477,7 +702,7 @@ export default function Home() {
 
             <div className="card">
               <h2>Grafik</h2>
-              <p className="sub">Pilih sumbu X dan kolom Y yang mau ditampilkan. Bisa juga plot semua kolom angka sekaligus dengan X = tanggal.</p>
+              <p className="sub">Pilih sumbu X dan kolom Y yang mau ditampilkan. Bisa juga plot semua kolom angka sekaligus dengan X = tanggal. Klik titik di grafik untuk melihat detail tanggal &amp; jam dan nilainya.</p>
               <div className="row">
                 <div className="field" style={{ flex: '0 0 200px' }}>
                   <label>Sumbu X</label>
@@ -509,11 +734,11 @@ export default function Home() {
               ) : (
                 <div style={{ height: 320, marginTop: 12 }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                    <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'main')}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="x" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
-                      <Tooltip />
+                      <Tooltip content={<ChartTooltip />} />
                       <Legend />
                       {chartY.map((id, i) => (
                         <Line
@@ -530,6 +755,7 @@ export default function Home() {
                   </ResponsiveContainer>
                 </div>
               )}
+              {selectedBox('main')}
             </div>
 
             <div className="card">
@@ -581,11 +807,11 @@ export default function Home() {
                   )}
                   <div style={{ height: 320, marginTop: 12 }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={forecastChart} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                      <LineChart data={forecastChart} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'forecast')}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="t" tick={{ fontSize: 12 }} />
                         <YAxis tick={{ fontSize: 12 }} />
-                        <Tooltip />
+                        <Tooltip content={<ChartTooltip />} />
                         <Legend />
                         {predColIds.map((id, i) => (
                           <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
@@ -596,6 +822,7 @@ export default function Home() {
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
+                  {selectedBox('forecast')}
                   <div className="tablewrap" style={{ marginTop: 12 }}>
                     <table>
                       <thead>
@@ -618,7 +845,10 @@ export default function Home() {
                       </tbody>
                     </table>
                   </div>
-                  <p className="legend">Diprediksi {result.at ? `pada ${fmtDate(result.at)}` : ''} · {result.meta?.rows_used} baris dipakai · garis putus-putus = prediksi.</p>
+                  <p className="legend">Diprediksi {result.at ? `pada ${fmtDate(result.at)}` : ''} · {result.meta?.rows_used} baris dipakai{result.meta?.rows_total ? ` dari ${result.meta.rows_total}` : ''} · garis putus-putus = prediksi.</p>
+                  {result.meta?.filters && Object.keys(result.meta.filters).length > 0 && (
+                    <p className="legend">Filter: {Object.entries(result.meta.filters).map(([k, v]) => fmtFilter(k, v)).join('; ')}</p>
+                  )}
                 </>
               )}
             </div>
