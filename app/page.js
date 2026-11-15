@@ -1041,7 +1041,7 @@ export default function Home() {
         return v && !v.error && typeof v.value === 'number' ? v.value : null;
       }
       return null;
-    });
+    }, [...columns.map((cc) => cc.name), ...savedAggs.map((a) => a.name)]);
     return res.error ? null : res.value;
   }
 
@@ -1341,7 +1341,7 @@ export default function Home() {
                 </div>
                 <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
                   <h2 style={{ fontSize: 16 }}>Variabel</h2>
-                  <p className="sub">Variabel dihitung dari <b>baris yang tampil di tabel</b> — kalau tabel difilter, nilainya ikut berubah. Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>.</p>
+                  <p className="sub">Variabel dihitung dari <b>baris yang tampil di tabel</b> — kalau tabel difilter, nilainya ikut berubah. Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>. Nama variabel/kolom boleh diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja — atau ketuk tag di bawah.</p>
                   <form onSubmit={simpanAggregate} className="row">
                     <div className="field" style={{ flex: '0 0 200px' }}>
                       <label>Nama variabel</label>
@@ -1353,6 +1353,16 @@ export default function Home() {
                     </div>
                     <button type="submit" className="primary" disabled={aggBusy || !aggName.trim() || !aggFormula.trim()}>{aggBusy ? 'Menyimpan…' : 'Simpan variabel'}</button>
                   </form>
+                  <p className="legend" style={{ marginTop: 8 }}>Ketuk tag untuk menyisipkan ke rumus:</p>
+                  <div style={{ marginTop: 4 }}>
+                    {savedAggs.map((a) => (
+                      <button key={a.id} type="button" className="chip" onClick={() => setAggFormula((p) => `${p}[${a.name}]`)} title={`Variabel: ${a.formula}`}>{a.name} (variabel)</button>
+                    ))}
+                    {numericCols.map((c) => (
+                      <button key={c.id} type="button" className="chip" onClick={() => setAggFormula((p) => `${p}sum([${c.name}])`)} title={`Jumlah kolom ${c.name}`}>sum({c.name})</button>
+                    ))}
+                    {savedAggs.length === 0 && numericCols.length === 0 && <span className="legend">Belum ada variabel atau kolom angka.</span>}
+                  </div>
                   <div className="row" style={{ marginTop: 8 }}>
                     <span className="legend">Atau isi rumus dari filter yang sedang aktif:</span>
                     <select value={varNumCol} onChange={(e) => setVarNumCol(e.target.value)} style={{ flex: '0 0 180px' }}>
@@ -1711,7 +1721,7 @@ export default function Home() {
                           placeholder="[Harga] * [Jumlah Barang]"
                         />
                       </div>
-                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>.</p>
+                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>. Nama boleh juga diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja.</p>
                       <div>
                         {numericCols.map((c) => (
                           <button key={c.id} type="button" className="chip" onClick={() => setFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
@@ -1754,10 +1764,13 @@ export default function Home() {
                       </div>
                       <button type="submit" disabled={!editFormulaId || formulaBusy}>{formulaBusy ? 'Menyimpan…' : 'Simpan rumus'}</button>
                     </form>
-                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus:</p>
+                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom/variabel di bawah untuk memasukkannya ke rumus (nama boleh juga diketik langsung tanpa [ ]):</p>
                     <div>
                       {numericCols.map((c) => (
                         <button key={c.id} type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
+                      ))}
+                      {savedAggs.map((a) => (
+                        <button key={a.id} type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}[${a.name}]`)} title={`Variabel: ${a.formula}`}>{a.name} (variabel)</button>
                       ))}
                     </div>
                   </div>
