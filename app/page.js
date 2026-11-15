@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 
 import { evalAggregate } from './lib/aggregate';
+import { evalFormula } from './lib/formula';
 
 const COLORS = ['#2e86c1', '#f5a623', '#1e8449', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#2c3e50'];
 
@@ -252,6 +253,16 @@ export default function Home() {
     copy.sort((a, b) => new Date(a.values.tanggal) - new Date(b.values.tanggal));
     return copy;
   }, [filteredRows]);
+
+  // Nilai variabel dihitung dari BARIS YANG TAMPIL di tabel (filter aktif),
+  // bukan seluruh data — kalau tabel difilter, nilai variabel ikut berubah.
+  const aggValues = useMemo(() => {
+    const out = {};
+    for (const a of savedAggs) {
+      out[a.id] = evalAggregate(a.formula, columns, sortedFilteredRows, savedAggs);
+    }
+    return out;
+  }, [savedAggs, columns, sortedFilteredRows]);
 
   const loadData = useCallback(async () => {
     try {
@@ -722,17 +733,25 @@ export default function Home() {
     if (chartX === 'tanggal') {
       return sortedFilteredRows.map((r) => {
         const p = { x: fmtTick(r.values.tanggal), full: r.values.tanggal };
-        for (const id of chartY) p[id] = r.values[id];
+        for (const id of chartY) {
+          const col = columns.find((cc) => cc.id === id);
+          const dv = col ? displayNum(col, r) : undefined;
+          p[id] = dv === undefined ? r.values[id] : dv;
+        }
         return p;
       });
     }
     const copy = [...filteredRows].sort((a, b) => (a.values[chartX] ?? 0) - (b.values[chartX] ?? 0));
     return copy.map((r) => {
       const p = { x: r.values[chartX], full: r.values.tanggal };
-      for (const id of chartY) p[id] = r.values[id];
+      for (const id of chartY) {
+        const col = columns.find((cc) => cc.id === id);
+        const dv = col ? displayNum(col, r) : undefined;
+        p[id] = dv === undefined ? r.values[id] : dv;
+      }
       return p;
     });
-  }, [sortedFilteredRows, filteredRows, chartX, chartY]);
+  }, [sortedFilteredRows, filteredRows, chartX, chartY, columns, aggValues]);
 
   // Kolom hasil prediksi yang masih ada di skema (kolom yang sudah dihapus disaring).
   const predColIds = useMemo(() => {
@@ -744,7 +763,11 @@ export default function Home() {
     if (!result || predColIds.length === 0) return [];
     const pts = sortedFilteredRows.map((r) => {
       const p = { t: fmtTick(r.values.tanggal), full: r.values.tanggal, _sort: new Date(r.values.tanggal).getTime() };
-      for (const id of predColIds) p[id] = r.values[id];
+      for (const id of predColIds) {
+        const col = columns.find((cc) => cc.id === id);
+        const dv = col ? displayNum(col, r) : undefined;
+        p[id] = dv === undefined ? r.values[id] : dv;
+      }
       return p;
     });
     const first = result.columns[predColIds[0]];
@@ -756,7 +779,7 @@ export default function Home() {
     });
     pts.sort((a, b) => a._sort - b._sort);
     return pts;
-  }, [result, sortedFilteredRows, predColIds]);
+  }, [result, sortedFilteredRows, predColIds, columns, aggValues]);
 
   function toggleY(id) {
     setChartY((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -972,6 +995,56 @@ export default function Home() {
     );
   }
 
+  function numOrNull(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // Apakah rumus kolom ini merujuk ke sebuah variabel — langsung, atau
+  // lewat kolom rumus lain (mis. [Sisa Gudang] * 2, padahal Sisa Gudang
+  // sendiri = [Stok Bawang])? Dicek transitif supaya nilai tampilannya
+  // ikut filter tabel di semua rantai.
+  function formulaUsesVariable(formula, seen = new Set()) {
+    const names = [...String(formula || '').matchAll(/\[([^\]]+)\]/g)].map((m) => m[1].trim().toLowerCase());
+    for (const n of names) {
+      if (savedAggs.some((a) => a.name.toLowerCase() === n)) return true;
+      const col = columns.find((cc) => cc.name.toLowerCase() === n);
+      if (col && col.type === 'rumus' && col.formula && !seen.has(col.id)) {
+        seen.add(col.id);
+        if (formulaUsesVariable(col.formula, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Nilai rumus per-baris untuk tampilan: kolom angka dibaca dari baris,
+  // variabel dibaca dari aggValues (baris yang tampil). Dipakai tabel,
+  // grafik, dan unduhan supaya konsisten dengan kartu Variabel.
+  // Kembalian undefined = rumus tidak memakai variabel, pakai nilai tersimpan.
+  function displayNum(c, r, seen = new Set()) {
+    if (c.type !== 'rumus' || !c.formula || !formulaUsesVariable(c.formula)) return undefined;
+    if (seen.has(c.id)) return null;
+    seen.add(c.id);
+    const res = evalFormula(c.formula, (name) => {
+      const key = name.toLowerCase();
+      const col = columns.find((cc) => cc.name.toLowerCase() === key);
+      if (col) {
+        if (col.type === 'rumus' && col.formula) {
+          const v = displayNum(col, r, seen);
+          return v === undefined ? numOrNull(r.values[col.id]) : v;
+        }
+        return numOrNull(r.values[col.id]);
+      }
+      const agg = savedAggs.find((a) => a.name.toLowerCase() === key);
+      if (agg) {
+        const v = aggValues[agg.id];
+        return v && !v.error && typeof v.value === 'number' ? v.value : null;
+      }
+      return null;
+    });
+    return res.error ? null : res.value;
+  }
+
   function cellValue(c, r) {
     if (c.type === 'tanggal') return fmtDate(r.values.tanggal);
     if (c.type === 'selection') {
@@ -984,6 +1057,10 @@ export default function Home() {
       );
     }
     if (c.type === 'string') return r.values[c.id] ?? '';
+    if (c.type === 'rumus' && c.formula) {
+      const v = displayNum(c, r);
+      if (v !== undefined) return fmtNum(v);
+    }
     return fmtNum(r.values[c.id]);
   }
 
@@ -992,6 +1069,10 @@ export default function Home() {
   function rawCell(c, r) {
     if (c.type === 'tanggal') return fmtDate(r.values.tanggal);
     if (c.type === 'string') return r.values[c.id] ?? '';
+    if (c.type === 'rumus' && c.formula) {
+      const v = displayNum(c, r);
+      if (v !== undefined) return v === null ? '' : v;
+    }
     const v = r.values[c.id];
     return v === null || v === undefined ? '' : v;
   }
@@ -1260,7 +1341,7 @@ export default function Home() {
                 </div>
                 <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
                   <h2 style={{ fontSize: 16 }}>Variabel</h2>
-                  <p className="sub">Variabel = rumus tersimpan atas <b>seluruh data</b> (bukan hanya baris yang tampil). Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>.</p>
+                  <p className="sub">Variabel dihitung dari <b>baris yang tampil di tabel</b> — kalau tabel difilter, nilainya ikut berubah. Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>.</p>
                   <form onSubmit={simpanAggregate} className="row">
                     <div className="field" style={{ flex: '0 0 200px' }}>
                       <label>Nama variabel</label>
@@ -1291,19 +1372,19 @@ export default function Home() {
                     <button type="button" className="ghost" onClick={() => setAggFormula(composeVarFormula(varAggFn, varNumCol))} disabled={!varNumCol}>Isi dari filter</button>
                   </div>
                   {aggFormula.trim() && (() => {
-                    const res = evalAggregate(aggFormula, columns, rows, savedAggs);
+                    const res = evalAggregate(aggFormula, columns, sortedFilteredRows, savedAggs);
                     return res.error
                       ? <p className="msg err">{res.error}</p>
-                      : <p className="msg">Hasil sekarang (seluruh data): <b>{fmtNum(Math.round(res.value * 100) / 100)}</b></p>;
+                      : <p className="msg">Hasil sekarang (baris yang tampil): <b>{fmtNum(Math.round(res.value * 100) / 100)}</b></p>;
                   })()}
                   {aggMsg && <p className="msg">{aggMsg}</p>}
                   {savedAggs.length > 0 && (
                     <div className="tablewrap" style={{ marginTop: 12 }}>
                       <table>
-                        <thead><tr><th>Nama</th><th>Rumus</th><th className="num">Nilai (seluruh data)</th><th></th></tr></thead>
+                        <thead><tr><th>Nama</th><th>Rumus</th><th className="num">Nilai (baris yang tampil)</th><th></th></tr></thead>
                         <tbody>
                           {savedAggs.map((a) => {
-                            const res = evalAggregate(a.formula, columns, rows, savedAggs);
+                            const res = aggValues[a.id] || { value: null, error: null };
                             return (
                               <tr key={a.id}>
                                 <td>{a.name}</td>
@@ -1325,7 +1406,7 @@ export default function Home() {
             {view === 'filter' && (
               <div className="card">
                 <h2>Filter Data</h2>
-                <p className="sub">Filter berlaku untuk tabel, grafik, dan prediksi. Tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai dari kolom.</p>
+                <p className="sub">Filter berlaku untuk tabel, grafik, prediksi, dan variabel. Tanggal pakai rentang tanggal, angka pakai rentang angka, teks pakai pilihan nilai dari kolom.</p>
                 {columns.length === 0 ? (
                   <p className="empty">Belum ada kolom.</p>
                 ) : (
@@ -1339,7 +1420,7 @@ export default function Home() {
                 </div>
                 <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
                   <h2 style={{ fontSize: 16 }}>Jadikan Variabel</h2>
-                  <p className="sub">Simpan filter yang sedang aktif sebagai variabel stok — mis. filter Jenis barang = Bawang merah + Arus = in, kolom jumlah, sum → variabel &quot;Bawang In&quot;. Nilai variabel selalu dihitung dari seluruh data, jadi tetap benar walau filternya diubah nanti. Variabel bisa dipakai di rumus lain dengan [Nama Variabel].</p>
+                  <p className="sub">Simpan filter yang sedang aktif sebagai variabel stok — mis. filter Jenis barang = Bawang merah + Arus = in, kolom jumlah, sum → variabel &quot;Bawang In&quot;. Nilai variabel dihitung dari baris yang tampil di tabel, jadi ikut berubah kalau filternya diubah nanti. Variabel bisa dipakai di rumus lain dengan [Nama Variabel].</p>
                   <form onSubmit={simpanVariabelDariFilter} className="row">
                     <div className="field" style={{ flex: '0 0 200px' }}>
                       <label>Nama variabel</label>
