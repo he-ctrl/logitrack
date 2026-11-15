@@ -1341,7 +1341,7 @@ export default function Home() {
                 </div>
                 <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
                   <h2 style={{ fontSize: 16 }}>Variabel</h2>
-                  <p className="sub">Variabel dihitung dari <b>baris yang tampil di tabel</b> — kalau tabel difilter, nilainya ikut berubah. Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>. Nama variabel/kolom boleh diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja — atau ketuk tag di bawah.</p>
+                  <p className="sub">Variabel dihitung dari <b>baris yang tampil di tabel</b> — kalau tabel difilter, nilainya ikut berubah. Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>. Nama variabel/kolom boleh diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja — atau ketuk tag di bawah. Ada <b>IF</b>: <b>IF([Stok Bawang] &gt; 10, [Stok Bawang], 0)</b> — IF di variabel menghitung dari semua baris yang tampil, bisa bersarang, plus AND/OR/NOT.</p>
                   <form onSubmit={simpanAggregate} className="row">
                     <div className="field" style={{ flex: '0 0 200px' }}>
                       <label>Nama variabel</label>
@@ -1355,6 +1355,7 @@ export default function Home() {
                   </form>
                   <p className="legend" style={{ marginTop: 8 }}>Ketuk tag untuk menyisipkan ke rumus:</p>
                   <div style={{ marginTop: 4 }}>
+                    <button type="button" className="chip" onClick={() => setAggFormula((p) => `${p}IF(, , )`)} title="IF(kondisi, jika benar, jika salah) — bisa bersarang">IF(...)</button>
                     {savedAggs.map((a) => (
                       <button key={a.id} type="button" className="chip" onClick={() => setAggFormula((p) => `${p}[${a.name}]`)} title={`Variabel: ${a.formula}`}>{a.name} (variabel)</button>
                     ))}
@@ -1721,8 +1722,10 @@ export default function Home() {
                           placeholder="[Harga] * [Jumlah Barang]"
                         />
                       </div>
-                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>. Nama boleh juga diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja.</p>
+                      <p className="legend" style={{ marginTop: 8 }}>Klik kolom di bawah untuk memasukkannya ke rumus. Bisa juga memakai variabel stok dengan <b>[Nama Variabel]</b> — mis. kolom &quot;Sisa Gudang&quot; = <b>[Stok Bawang]</b>. Nama boleh juga diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja. Ada <b>IF</b> ala Excel: <b>IF([Stok Bawang] &gt; 0, [Stok Bawang], 0)</b> — kondisi di IF memakai baris itu sendiri, bisa bersarang, plus AND/OR/NOT. Ada <b>STOK</b> buat stok berjalan per barang: <b>STOK([jumlah], [Jenis barang], [Status])</b> — jumlah sampai baris ini, in nambah, out ngurangin.</p>
                       <div>
+                        <button type="button" className="chip" onClick={() => setFormulaText((p) => `${p}IF(, , )`)} title="IF(kondisi, jika benar, jika salah) — bisa bersarang">IF(...)</button>
+                        <button type="button" className="chip" onClick={() => setFormulaText((p) => `${p}STOK(, , )`)} title="STOK([jumlah], [Jenis barang], [Status]) — stok berjalan per barang sampai baris ini">STOK(...)</button>
                         {numericCols.map((c) => (
                           <button key={c.id} type="button" className="chip" onClick={() => setFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
                         ))}
@@ -1764,8 +1767,10 @@ export default function Home() {
                       </div>
                       <button type="submit" disabled={!editFormulaId || formulaBusy}>{formulaBusy ? 'Menyimpan…' : 'Simpan rumus'}</button>
                     </form>
-                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom/variabel di bawah untuk memasukkannya ke rumus (nama boleh juga diketik langsung tanpa [ ]):</p>
+                    <p className="legend" style={{ marginTop: 8 }}>Klik kolom/variabel di bawah untuk memasukkannya ke rumus (nama boleh juga diketik langsung tanpa [ ]). Ada <b>IF</b>: <b>IF([Stok Bawang] &gt; 0, [Stok Bawang], 0)</b> — kondisi memakai baris itu sendiri, bisa bersarang. Ada <b>STOK</b>: <b>STOK([jumlah], [Jenis barang], [Status])</b> — stok berjalan per barang sampai baris ini.</p>
                     <div>
+                      <button type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}IF(, , )`)} title="IF(kondisi, jika benar, jika salah) — bisa bersarang">IF(...)</button>
+                      <button type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}STOK(, , )`)} title="STOK([jumlah], [Jenis barang], [Status]) — stok berjalan per barang sampai baris ini">STOK(...)</button>
                       {numericCols.map((c) => (
                         <button key={c.id} type="button" className="chip" onClick={() => setEditFormulaText((p) => `${p}[${c.name}]`)}>{c.name}</button>
                       ))}
