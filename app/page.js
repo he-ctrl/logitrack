@@ -1,0 +1,555 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+
+const COLORS = ['#2e86c1', '#f5a623', '#1e8449', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#2c3e50'];
+
+function nowInput() {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso ?? '');
+  return d.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtTick(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+}
+
+function fmtNum(v) {
+  if (typeof v === 'number') return v.toLocaleString('id-ID');
+  return v ?? '';
+}
+
+export default function Home() {
+  const [columns, setColumns] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const [colName, setColName] = useState('');
+  const [colType, setColType] = useState('int');
+  const [colBusy, setColBusy] = useState(false);
+
+  const [rowForm, setRowForm] = useState({ tanggal: nowInput() });
+  const [rowBusy, setRowBusy] = useState(false);
+
+  const [chartX, setChartX] = useState('tanggal');
+  const [chartY, setChartY] = useState([]);
+  const [sampleBusy, setSampleBusy] = useState(false);
+
+  const [predScope, setPredScope] = useState('all');
+  const [predCols, setPredCols] = useState([]);
+  const [horizon, setHorizon] = useState(7);
+  const [job, setJob] = useState(null);
+  const [result, setResult] = useState(null);
+  const [predMsg, setPredMsg] = useState('');
+  const [predBusy, setPredBusy] = useState(false);
+
+  const numericCols = useMemo(() => columns.filter((c) => c.type === 'int' || c.type === 'double'), [columns]);
+
+  const loadData = useCallback(async () => {
+    try {
+      const res = await fetch('/api/data', { cache: 'no-store' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal memuat data.');
+      setColumns(j.columns);
+      setRows(j.rows);
+      setError('');
+      setRowForm((prev) => {
+        const next = { ...prev };
+        for (const c of j.columns) {
+          if (!(c.id in next)) next[c.id] = c.type === 'tanggal' ? nowInput() : '';
+        }
+        return next;
+      });
+      setChartY((prev) => {
+        const ids = j.columns.filter((c) => c.type === 'int' || c.type === 'double').map((c) => c.id);
+        return prev.filter((id) => ids.includes(id));
+      });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // Poll status prediksi selama masih berjalan.
+  useEffect(() => {
+    if (!job || (job.status !== 'pending' && job.status !== 'processing')) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/predict?id=${job.id}`, { cache: 'no-store' });
+        const j = await res.json();
+        if (res.ok && j.job) {
+          setJob(j.job);
+          if (j.job.status === 'done') setResult(j.result);
+          if (j.job.status === 'error') setPredMsg(j.job.error || 'Prediksi gagal.');
+        }
+      } catch (e) { /* coba lagi di interval berikut */ }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [job]);
+
+  async function tambahKolom(e) {
+    e.preventDefault();
+    setColBusy(true);
+    setMsg('');
+    try {
+      const res = await fetch('/api/columns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: colName, type: colType }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menambah kolom.');
+      setColumns(j.columns);
+      setRows(j.rows);
+      setColName('');
+      setMsg(`Kolom "${j.added.name}" (${j.added.type}) ditambahkan. Baris lama diisi ${j.added.type === 'string' ? 'kosong' : '0'}.`);
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setColBusy(false);
+    }
+  }
+
+  async function tambahRow(e) {
+    e.preventDefault();
+    setRowBusy(true);
+    setMsg('');
+    try {
+      const values = {};
+      for (const c of columns) {
+        if (c.type === 'tanggal') {
+          values.tanggal = rowForm.tanggal ? new Date(rowForm.tanggal).toISOString() : new Date().toISOString();
+        } else {
+          values[c.id] = rowForm[c.id] ?? '';
+        }
+      }
+      const res = await fetch('/api/rows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menambah baris.');
+      setRows(j.rows);
+      setRowForm((prev) => ({ ...prev, tanggal: nowInput() }));
+      setMsg('Baris masuk ke tabel.');
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setRowBusy(false);
+    }
+  }
+
+  async function hapusRow(id) {
+    if (!confirm('Hapus baris ini?')) return;
+    const res = await fetch(`/api/rows?id=${id}`, { method: 'DELETE' });
+    const j = await res.json();
+    if (res.ok) setRows(j.rows);
+    else setMsg(j.error || 'Gagal menghapus baris.');
+  }
+
+  async function isiContoh() {
+    setSampleBusy(true);
+    setMsg('');
+    try {
+      let cols = columns;
+      let jumlahId = cols.find((c) => c.type === 'int' || c.type === 'double')?.id;
+      if (!jumlahId) {
+        const r = await fetch('/api/columns', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Jumlah Barang', type: 'int' }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || 'Gagal membuat kolom contoh.');
+        cols = j.columns;
+        jumlahId = j.added.id;
+      }
+      const base = new Date();
+      base.setHours(10, 0, 0, 0);
+      for (let i = 13; i >= 0; i--) {
+        const d = new Date(base);
+        d.setDate(d.getDate() - i);
+        const dow = d.getDay();
+        const weekend = dow === 0 || dow === 6;
+        const val = Math.round(110 + (weekend ? -25 : 25) + 18 * Math.sin(i / 2.2) + (i % 3) * 7);
+        await fetch('/api/rows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values: { tanggal: d.toISOString(), [jumlahId]: val } }),
+        });
+      }
+      await loadData();
+      setMsg('14 baris contoh ditambahkan (14 hari terakhir, Jumlah Barang).');
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setSampleBusy(false);
+    }
+  }
+
+  async function jalankanPrediksi(e) {
+    e.preventDefault();
+    setPredBusy(true);
+    setPredMsg('');
+    setResult(null);
+    try {
+      const res = await fetch('/api/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          columns: predScope === 'all' ? 'all' : predCols,
+          horizon,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal memulai prediksi.');
+      setJob(j.job);
+      setPredMsg('Prediksi dikirim ke worker TimesFM, mohon tunggu…');
+    } catch (err) {
+      setPredMsg(err.message);
+    } finally {
+      setPredBusy(false);
+    }
+  }
+
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => new Date(a.values.tanggal) - new Date(b.values.tanggal));
+    return copy;
+  }, [rows]);
+
+  const chartData = useMemo(() => {
+    if (chartY.length === 0) return [];
+    if (chartX === 'tanggal') {
+      return sortedRows.map((r) => {
+        const p = { x: fmtTick(r.values.tanggal) };
+        for (const id of chartY) p[id] = r.values[id];
+        return p;
+      });
+    }
+    const copy = [...rows].sort((a, b) => (a.values[chartX] ?? 0) - (b.values[chartX] ?? 0));
+    return copy.map((r) => {
+      const p = { x: r.values[chartX] };
+      for (const id of chartY) p[id] = r.values[id];
+      return p;
+    });
+  }, [sortedRows, rows, chartX, chartY]);
+
+  const forecastChart = useMemo(() => {
+    if (!result) return [];
+    const pts = sortedRows.map((r) => {
+      const p = { t: fmtTick(r.values.tanggal), _sort: new Date(r.values.tanggal).getTime() };
+      for (const id of Object.keys(result.columns)) p[id] = r.values[id];
+      return p;
+    });
+    const first = result.columns[Object.keys(result.columns)[0]];
+    if (!first) return pts;
+    first.dates.forEach((iso, i) => {
+      const p = { t: fmtTick(iso), _sort: new Date(iso).getTime() };
+      for (const [id, col] of Object.entries(result.columns)) p[`${id}_pred`] = col.values[i];
+      pts.push(p);
+    });
+    pts.sort((a, b) => a._sort - b._sort);
+    return pts;
+  }, [result, sortedRows]);
+
+  function toggleY(id) {
+    setChartY((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  return (
+    <>
+      <header className="topbar">
+        <h1>Logi<span>Track</span></h1>
+        <p>Dashboard pelacakan logistik — tabel dinamis, grafik &amp; prediksi TimesFM</p>
+      </header>
+      <main>
+        {loading && <div className="card"><p className="empty">Memuat data…</p></div>}
+        {error && (
+          <div className="card">
+            <p className="msg err">{error}</p>
+            <p className="legend">Pastikan KV (Upstash) sudah terhubung ke proyek Vercel ini, lalu muat ulang halaman.</p>
+          </div>
+        )}
+        {!loading && !error && (
+          <>
+            <div className="card">
+              <h2>Ringkasan</h2>
+              <p className="sub">Kolom tanggal/waktu adalah feature (sumbu waktu). Kolom angka (int/double) adalah label yang bisa digrafik dan diprediksi.</p>
+              <span className="pill">{columns.length} kolom</span>{' '}
+              <span className="pill">{rows.length} baris</span>{' '}
+              {job && <span className={`pill ${job.status === 'done' ? 'ok' : job.status === 'error' ? 'err' : 'warn'}`}>Prediksi: {job.status}</span>}
+            </div>
+
+            <div className="card">
+              <h2>Tabel Data</h2>
+              <p className="sub">Baris terbaru ada di bawah. Tambah kolom baru: baris lama otomatis terisi 0 (int/double) atau kosong (string).</p>
+              {rows.length === 0 ? (
+                <p className="empty">Belum ada baris. Tambahkan lewat form di bawah, atau isi data contoh untuk mencoba grafik &amp; prediksi.</p>
+              ) : (
+                <div className="tablewrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        {columns.map((c) => (
+                          <th key={c.id} className={c.type === 'int' || c.type === 'double' ? 'num' : ''}>
+                            {c.name} <span style={{ fontWeight: 400 }}>({c.type})</span>
+                          </th>
+                        ))}
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedRows.map((r) => (
+                        <tr key={r.id}>
+                          {columns.map((c) => (
+                            <td key={c.id} className={c.type === 'int' || c.type === 'double' ? 'num' : ''}>
+                              {c.type === 'tanggal' ? fmtDate(r.values.tanggal) : c.type === 'string' ? (r.values[c.id] ?? '') : fmtNum(r.values[c.id])}
+                            </td>
+                          ))}
+                          <td><button className="danger" onClick={() => hapusRow(r.id)}>Hapus</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div style={{ marginTop: 12 }} className="row">
+                <button className="ghost" onClick={isiContoh} disabled={sampleBusy}>
+                  {sampleBusy ? 'Mengisi…' : 'Isi data contoh (14 hari)'}
+                </button>
+                <button className="ghost" onClick={loadData}>Muat ulang</button>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2>Tambah Kolom</h2>
+              <p className="sub">Kolom baru langsung muncul di tabel paling atas dan di form tambah baris.</p>
+              <form onSubmit={tambahKolom} className="row">
+                <div className="field">
+                  <label>Nama kolom</label>
+                  <input value={colName} onChange={(e) => setColName(e.target.value)} placeholder="mis. Jumlah Barang" />
+                </div>
+                <div className="field" style={{ flex: '0 0 160px' }}>
+                  <label>Tipe data</label>
+                  <select value={colType} onChange={(e) => setColType(e.target.value)}>
+                    <option value="int">int (bilangan bulat)</option>
+                    <option value="double">double (desimal)</option>
+                    <option value="string">string (teks)</option>
+                  </select>
+                </div>
+                <button type="submit" disabled={colBusy}>{colBusy ? 'Menambah…' : 'Tambah kolom'}</button>
+              </form>
+            </div>
+
+            <div className="card">
+              <h2>Tambah Baris</h2>
+              <p className="sub">Tanggal defaultnya tanggal &amp; jam sekarang — bisa diubah. Klik Masukan, data langsung masuk ke tabel.</p>
+              <form onSubmit={tambahRow} className="row">
+                {columns.map((c) => (
+                  <div className="field" key={c.id}>
+                    <label>{c.name} <span className="type">({c.type})</span></label>
+                    {c.type === 'tanggal' ? (
+                      <input
+                        type="datetime-local"
+                        value={rowForm.tanggal || ''}
+                        onChange={(e) => setRowForm((p) => ({ ...p, tanggal: e.target.value }))}
+                      />
+                    ) : c.type === 'string' ? (
+                      <input
+                        type="text"
+                        value={rowForm[c.id] ?? ''}
+                        onChange={(e) => setRowForm((p) => ({ ...p, [c.id]: e.target.value }))}
+                        placeholder="teks"
+                      />
+                    ) : (
+                      <input
+                        type="number"
+                        step={c.type === 'int' ? 1 : 'any'}
+                        value={rowForm[c.id] ?? ''}
+                        onChange={(e) => setRowForm((p) => ({ ...p, [c.id]: e.target.value }))}
+                        placeholder="0"
+                      />
+                    )}
+                  </div>
+                ))}
+                <button type="submit" className="primary" disabled={rowBusy}>{rowBusy ? 'Memasukkan…' : 'Masukan'}</button>
+              </form>
+              {msg && <p className="msg">{msg}</p>}
+            </div>
+
+            <div className="card">
+              <h2>Grafik</h2>
+              <p className="sub">Pilih sumbu X dan kolom Y yang mau ditampilkan. Bisa juga plot semua kolom angka sekaligus dengan X = tanggal.</p>
+              <div className="row">
+                <div className="field" style={{ flex: '0 0 200px' }}>
+                  <label>Sumbu X</label>
+                  <select value={chartX} onChange={(e) => setChartX(e.target.value)}>
+                    <option value="tanggal">Tanggal</option>
+                    {numericCols.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Sumbu Y (kolom angka)</label>
+                  <div className="checks">
+                    {numericCols.length === 0 && <span className="legend">Belum ada kolom angka.</span>}
+                    {numericCols.map((c) => (
+                      <label key={c.id}>
+                        <input type="checkbox" checked={chartY.includes(c.id)} onChange={() => toggleY(c.id)} />
+                        {c.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <button className="ghost" onClick={() => setChartY(numericCols.map((c) => c.id))} disabled={numericCols.length === 0}>
+                  Semua kolom
+                </button>
+              </div>
+              {chartData.length === 0 ? (
+                <p className="empty">Pilih minimal satu kolom Y untuk menampilkan grafik.</p>
+              ) : (
+                <div style={{ height: 320, marginTop: 12 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="x" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip />
+                      <Legend />
+                      {chartY.map((id, i) => (
+                        <Line
+                          key={id}
+                          type="monotone"
+                          dataKey={id}
+                          name={columns.find((c) => c.id === id)?.name || id}
+                          stroke={COLORS[i % COLORS.length]}
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="card">
+              <h2>Prediksi ke Depan (TimesFM)</h2>
+              <p className="sub">Feature: kolom tanggal/waktu. Label: kolom angka yang dipilih. Atur mau berapa data ke depan yang diprediksi.</p>
+              <form onSubmit={jalankanPrediksi} className="row">
+                <div className="field" style={{ flex: '0 0 220px' }}>
+                  <label>Kolom yang diprediksi</label>
+                  <select value={predScope} onChange={(e) => setPredScope(e.target.value)}>
+                    <option value="all">Semua kolom angka</option>
+                    <option value="pick">Pilih kolom…</option>
+                  </select>
+                </div>
+                {predScope === 'pick' && (
+                  <div className="field">
+                    <label>Pilih kolom</label>
+                    <div className="checks">
+                      {numericCols.map((c) => (
+                        <label key={c.id}>
+                          <input
+                            type="checkbox"
+                            checked={predCols.includes(c.id)}
+                            onChange={() => setPredCols((p) => (p.includes(c.id) ? p.filter((x) => x !== c.id) : [...p, c.id]))}
+                          />
+                          {c.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="field" style={{ flex: '0 0 140px' }}>
+                  <label>Jumlah prediksi</label>
+                  <input type="number" min={1} max={60} value={horizon} onChange={(e) => setHorizon(e.target.value)} />
+                </div>
+                <button type="submit" className="primary" disabled={predBusy || numericCols.length === 0}>
+                  {predBusy ? 'Mengirim…' : 'Jalankan prediksi'}
+                </button>
+              </form>
+              {predMsg && <p className="msg">{predMsg}</p>}
+              {job && job.status === 'error' && <p className="msg err">{job.error}</p>}
+              {result && (
+                <>
+                  {result.meta?.warning && <p className="msg">{result.meta.warning}</p>}
+                  {Object.keys(result.meta?.skipped || {}).length > 0 && (
+                    <p className="legend">Dilewati: {Object.entries(result.meta.skipped).map(([k, v]) => `${columns.find((c) => c.id === k)?.name || k} (${v})`).join('; ')}</p>
+                  )}
+                  <div style={{ height: 320, marginTop: 12 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={forecastChart} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="t" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        {Object.keys(result.columns).map((id, i) => (
+                          <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                        ))}
+                        {Object.keys(result.columns).map((id, i) => (
+                          <Line key={`${id}_pred`} type="monotone" dataKey={`${id}_pred`} name={`${columns.find((c) => c.id === id)?.name || id} (prediksi)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="tablewrap" style={{ marginTop: 12 }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Tanggal prediksi</th>
+                          {Object.keys(result.columns).map((id) => (
+                            <th key={id} className="num">{columns.find((c) => c.id === id)?.name || id}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.columns[Object.keys(result.columns)[0]].dates.map((iso, i) => (
+                          <tr key={iso}>
+                            <td>{fmtDate(iso)}</td>
+                            {Object.keys(result.columns).map((id) => (
+                              <td key={id} className="num">{fmtNum(result.columns[id].values[i])}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="legend">Diprediksi {result.at ? `pada ${fmtDate(result.at)}` : ''} · {result.meta?.rows_used} baris dipakai · garis putus-putus = prediksi.</p>
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </main>
+      <footer>LogiTrack · data tersimpan di Upstash KV · prediksi oleh TimesFM 3.0 (Google) di sandbox</footer>
+    </>
+  );
+}
