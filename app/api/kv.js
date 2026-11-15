@@ -137,15 +137,18 @@ export function computeFormulas(columns, values, resolveVar, varNames = [], rowC
   const errors = [];
   const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
   const knownNames = [...columns.map((c) => c.name), ...varNames];
+  // [INI:Kolom] boleh juga dipakai sebagai nama argumen STOK/sum — awalan
+  // INI: diabaikan saat mencari kolomnya (nilainya tetap dari baris ini).
+  const colByName = (n) => byName.get(String(n).replace(/^ini:/i, '').trim().toLowerCase());
   // Stok berjalan per barang (fungsi STOK): jumlahkan kolom jumlah untuk
   // baris yang barangnya sama dengan baris ini dan tanggalnya <= baris ini
   // (rowCtx.rows sudah urut tanggal). Baris ke-j < index dibaca dari tabel,
   // baris saat ini dibaca dari `out` (nilai yang sedang dihitung).
   const running = (qtyName, itemName, dirName) => {
     if (!rowCtx) throw new Error('STOK hanya bisa dihitung dari data tabel (saat menyimpan baris).');
-    const qtyCol = byName.get(String(qtyName).toLowerCase());
-    const itemCol = byName.get(String(itemName).toLowerCase());
-    const dirCol = dirName ? byName.get(String(dirName).toLowerCase()) : null;
+    const qtyCol = colByName(qtyName);
+    const itemCol = colByName(itemName);
+    const dirCol = dirName ? colByName(dirName) : null;
     if (!qtyCol || !itemCol) return null;
     const itemVal = String(out[itemCol.id] ?? '').trim().toLowerCase();
     let sum = 0;
@@ -170,9 +173,9 @@ export function computeFormulas(columns, values, resolveVar, varNames = [], rowC
   // Perbandingan kondisi tanpa peduli huruf besar/kecil dan spasi.
   const aggregateFn = (fn, qtyName, conds) => {
     if (!rowCtx) throw new Error(`${fn.toUpperCase()} hanya bisa dihitung dari data tabel (saat menyimpan baris).`);
-    const qtyCol = byName.get(String(qtyName).toLowerCase());
+    const qtyCol = colByName(qtyName);
     if (!qtyCol) return null;
-    const condCols = conds.map((c) => ({ value: c.value, col: byName.get(String(c.column).toLowerCase()) }));
+    const condCols = conds.map((c) => ({ value: c.value, col: colByName(c.column) }));
     if (condCols.some((c) => !c.col)) return null;
     const cellEq = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
     const matches = (rv) => condCols.every(({ value, col }) => {
@@ -217,7 +220,15 @@ export function computeFormulas(columns, values, resolveVar, varNames = [], rowC
       continue;
     }
     const res = evalFormula(col.formula, (name) => {
-      const ref = byName.get(String(name).toLowerCase());
+      const raw = String(name);
+      // [INI:Kolom] = nilai kolom itu di baris ini (angka atau teks).
+      if (/^ini:/i.test(raw)) {
+        const ref = byName.get(raw.slice(4).trim().toLowerCase());
+        if (!ref) return null;
+        const v = out[ref.id];
+        return v === undefined ? null : v;
+      }
+      const ref = byName.get(raw.toLowerCase());
       if (ref) {
         const v = out[ref.id];
         return typeof v === 'number' && Number.isFinite(v) ? v : null;
