@@ -1,6 +1,9 @@
 // Helper Upstash KV (HTTP REST) untuk LogiTrack — pola yang sama dengan
 // proyek Kronos. Kredensial hanya dari env Vercel (KV_REST_API_URL /
 // KV_REST_API_TOKEN), tidak pernah dikirim ke browser.
+import crypto from 'node:crypto';
+import { evalFormula } from './formula';
+
 const KV_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_TOKEN = process.env.KV_REST_API_TOKEN || '';
 const KV_READ_TOKEN = process.env.KV_REST_API_READ_ONLY_TOKEN || KV_TOKEN;
@@ -103,4 +106,115 @@ export async function getResult(jobId) {
   return raw ? JSON.parse(raw) : null;
 }
 
-export { kvEnabled };
+// ---- Kolom rumus ----
+// Hitung semua kolom rumus (sesuai urutan skema — rumus hanya boleh memakai
+// kolom yang sudah ada, jadi urutan skema aman dari siklus).
+// values: nilai kolom biasa yang sudah dibersihkan. Kembalian:
+// { values: {..., [idRumus]: number|null}, errors: [{column, error}] }
+export function computeFormulas(columns, values) {
+  const out = { ...values };
+  const errors = [];
+  const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
+  for (const col of columns) {
+    if (col.type !== 'rumus') continue;
+    if (!col.formula) {
+      out[col.id] = null;
+      continue;
+    }
+    const res = evalFormula(col.formula, (name) => {
+      const ref = byName.get(String(name).toLowerCase());
+      if (!ref) return null;
+      const v = out[ref.id];
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    });
+    if (res.error) {
+      out[col.id] = null;
+      errors.push({ column: col.name, error: res.error });
+    } else {
+      out[col.id] = res.value;
+    }
+  }
+  return { values: out, errors };
+}
+
+// ---- Login & role ----
+// Akun disimpan di KV (logistik:users) sebagai hash SHA-256 + salt, bukan
+// password polos. Akun awal (ganti lewat form Ganti Password setelah login):
+// logistik / logistik123 (role logistik, semua fitur)
+// supervisor / supervisor123 (role supervisor: tabel, filter, prediksi, grafik)
+const SESSION_COOKIE = 'logistik_session';
+const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+
+export function hashPassword(password, salt) {
+  return crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex');
+}
+
+function makeUser(username, role, password) {
+  const salt = crypto.randomBytes(8).toString('hex');
+  return { username, role, salt, hash: hashPassword(password, salt) };
+}
+
+export async function getUsers() {
+  const raw = await kvGetRaw('logistik:users');
+  if (raw) {
+    try {
+      const users = JSON.parse(raw);
+      if (Array.isArray(users) && users.length > 0) return users;
+    } catch (e) { /* rusak — buat ulang di bawah */ }
+  }
+  const users = [
+    makeUser('logistik', 'logistik', 'logistik123'),
+    makeUser('supervisor', 'supervisor', 'supervisor123'),
+  ];
+  await kvSetRaw('logistik:users', JSON.stringify(users));
+  return users;
+}
+
+export async function saveUsers(users) {
+  return kvSetRaw('logistik:users', JSON.stringify(users));
+}
+
+async function getSessions() {
+  const raw = await kvGetRaw('logistik:sessions');
+  if (!raw) return {};
+  try {
+    const s = JSON.parse(raw);
+    return s && typeof s === 'object' ? s : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+export async function createSession(username, role) {
+  const id = crypto.randomBytes(24).toString('hex');
+  const sessions = await getSessions();
+  sessions[id] = { username, role, expires: Date.now() + SESSION_TTL_MS };
+  // Buang sesi yang sudah kedaluwarsa.
+  for (const [k, v] of Object.entries(sessions)) {
+    if (!v || v.expires < Date.now()) delete sessions[k];
+  }
+  await kvSetRaw('logistik:sessions', JSON.stringify(sessions));
+  return id;
+}
+
+export async function deleteSession(id) {
+  if (!id) return;
+  const sessions = await getSessions();
+  if (sessions[id]) {
+    delete sessions[id];
+    await kvSetRaw('logistik:sessions', JSON.stringify(sessions));
+  }
+}
+
+// Baca sesi dari cookie request. Kembalian: {username, role} atau null.
+export async function getSession(req) {
+  const cookie = req.headers.get('cookie') || '';
+  const m = cookie.match(/(?:^|;\s*)logistik_session=([^;]+)/);
+  if (!m) return null;
+  const sessions = await getSessions();
+  const s = sessions[m[1]];
+  if (!s || !s.username || !s.role || s.expires < Date.now()) return null;
+  return { username: s.username, role: s.role, id: m[1] };
+}
+
+export { kvEnabled, SESSION_COOKIE, SESSION_TTL_MS };
