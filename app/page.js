@@ -115,6 +115,7 @@ export default function Home() {
 
   const [filters, setFilters] = useState({});
   const [selected, setSelected] = useState(null);
+  const [autofillNote, setAutofillNote] = useState('');
 
   const [pwOld, setPwOld] = useState('');
   const [pwNew, setPwNew] = useState('');
@@ -134,6 +135,52 @@ export default function Home() {
     }
     return [...vals].sort((a, b) => a.localeCompare(b, 'id'));
   }, [rows]);
+
+  // Baris terakhir (tanggal terbaru) yang cocok dengan semua nilai string
+  // yang sudah terisi di form — dipakai untuk isi otomatis.
+  function latestMatchingRow(formValues) {
+    const filled = columns.filter((c) => c.type === 'string' && (formValues[c.id] ?? '') !== '');
+    if (filled.length === 0) return null;
+    const matches = rows.filter((r) =>
+      filled.every((c) => String(r.values[c.id] ?? '') === String(formValues[c.id] ?? ''))
+    );
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => new Date(b.values.tanggal) - new Date(a.values.tanggal));
+    return matches[0];
+  }
+
+  // Saat nilai string di form berubah: cari baris terakhir yang cocok,
+  // lalu isi semua input lain dari baris itu (tanggal & rumus tidak ikut).
+  function handleStringInput(c, value, form, setForm) {
+    const next = { ...form, [c.id]: value };
+    setForm(next);
+    if (!value) { setAutofillNote(''); return; }
+    const match = latestMatchingRow(next);
+    if (!match) { setAutofillNote(''); return; }
+    const filled = {};
+    for (const col of columns) {
+      if (col.type === 'tanggal' || col.type === 'rumus' || col.id === c.id) continue;
+      const v = match.values[col.id];
+      if (v !== undefined && v !== null && v !== '') filled[col.id] = v;
+    }
+    if (Object.keys(filled).length > 0) {
+      setForm((p) => ({ ...p, ...filled }));
+      setAutofillNote(`Diisi otomatis dari baris terakhir ${c.name} = "${value}" (${fmtDate(match.values.tanggal)}).`);
+    } else {
+      setAutofillNote('');
+    }
+  }
+
+  // Ringkasan filter yang sedang aktif, untuk info di grafik & prediksi.
+  function activeFilterSummary() {
+    const parts = [];
+    for (const [k, v] of Object.entries(filters)) {
+      if (v === '' || v == null) continue;
+      if (typeof v === 'object' && !Object.values(v).some((x) => x !== '' && x != null)) continue;
+      parts.push(fmtFilter(k, v));
+    }
+    return parts.length > 0 ? parts.join(' · ') : 'Semua data (tanpa filter)';
+  }
 
   // Baris yang lolos semua filter yang aktif (berlaku untuk tabel, grafik & prediksi).
   // string = cocok persis, tanggal = rentang tanggal, int/double/rumus = rentang angka.
@@ -353,6 +400,7 @@ export default function Home() {
       if (!res.ok) throw new Error(j.error || 'Gagal menambah baris.');
       setRows(j.rows);
       setRowForm((prev) => ({ ...prev, tanggal: nowInput() }));
+      setAutofillNote('');
       const warn = (j.formulaWarnings || []).map((w) => `${w.column}: ${w.error}`).join('; ');
       setMsg('Baris masuk ke tabel.' + (warn ? ` Perhatian rumus — ${warn}` : ''));
     } catch (err) {
@@ -370,6 +418,7 @@ export default function Home() {
     }
     setEditingRow({ id: row.id, values });
     setMsg('');
+    setAutofillNote('');
   }
 
   async function saveEdit(e) {
@@ -387,6 +436,7 @@ export default function Home() {
       if (!res.ok) throw new Error(j.error || 'Gagal mengubah baris.');
       setRows(j.rows);
       setEditingRow(null);
+      setAutofillNote('');
       const warn = (j.formulaWarnings || []).map((w) => `${w.column}: ${w.error}`).join('; ');
       setMsg('Baris diubah, kolom rumus dihitung ulang.' + (warn ? ` Perhatian rumus — ${warn}` : ''));
     } catch (err) {
@@ -706,7 +756,9 @@ export default function Home() {
 
   // Input untuk satu kolom di form baris (tambah & edit). Kolom rumus tidak
   // diinput — nilainya terhitung otomatis, jadi ditampilkan sebagai info.
-  function rowField(c, form, setForm) {
+  // String: saran dropdown dari nilai yang sudah ada + isi otomatis dari
+  // baris terakhir yang cocok (listPrefix membedakan datalist form tambah/edit).
+  function rowField(c, form, setForm, listPrefix = 'add') {
     if (c.type === 'rumus') {
       return (
         <div className="field" key={c.id}>
@@ -733,10 +785,16 @@ export default function Home() {
           <label>{c.name} <span className="type">({c.type})</span></label>
           <input
             type="text"
+            list={`dl-${listPrefix}-${c.id}`}
             value={form[c.id] ?? ''}
-            onChange={(e) => setForm((p) => ({ ...p, [c.id]: e.target.value }))}
-            placeholder="teks"
+            onChange={(e) => handleStringInput(c, e.target.value, form, setForm)}
+            placeholder="pilih dari saran atau ketik baru"
           />
+          <datalist id={`dl-${listPrefix}-${c.id}`}>
+            {filterOptions(c.id).map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </div>
       );
     }
@@ -758,6 +816,95 @@ export default function Home() {
     if (c.type === 'tanggal') return fmtDate(r.values.tanggal);
     if (c.type === 'string') return r.values[c.id] ?? '';
     return fmtNum(r.values[c.id]);
+  }
+
+  // Nilai mentah satu sel untuk unduhan (angka tetap angka supaya bisa
+  // dijumlah di Excel; tanggal jadi teks tanggal + jam).
+  function rawCell(c, r) {
+    if (c.type === 'tanggal') return fmtDate(r.values.tanggal);
+    if (c.type === 'string') return r.values[c.id] ?? '';
+    const v = r.values[c.id];
+    return v === null || v === undefined ? '' : v;
+  }
+
+  // Tangkap grafik (SVG Recharts) jadi gambar PNG untuk PDF.
+  async function captureChartImage() {
+    try {
+      const svg = document.querySelector('.recharts-wrapper svg');
+      if (!svg) return null;
+      const clone = svg.cloneNode(true);
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      const xml = new XMLSerializer().serializeToString(clone);
+      const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }));
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+      const w = svg.clientWidth || 800;
+      const h = svg.clientHeight || 320;
+      const canvas = document.createElement('canvas');
+      canvas.width = w * 2;
+      canvas.height = h * 2;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      return canvas.toDataURL('image/png');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function downloadTable(format) {
+    const dl = await import('./lib/download');
+    const headers = ['No', ...columns.map((c) => c.name)];
+    const rows = sortedFilteredRows.map((r, i) => [i + 1, ...columns.map((c) => rawCell(c, r))]);
+    const name = `logitrack-tabel-${dl.stamp()}`;
+    if (format === 'csv') dl.downloadFile(`${name}.csv`, dl.buildCSV(headers, rows), 'text/csv;charset=utf-8');
+    else if (format === 'xlsx') dl.downloadFile(`${name}.xlsx`, dl.buildExcel(headers, rows, 'Tabel'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    else dl.downloadFile(`${name}.pdf`, dl.buildPDF('LogiTrack — Tabel Data', `Filter: ${activeFilterSummary()} · Menampilkan ${sortedFilteredRows.length} dari ${rows.length} baris`, headers, rows, null), 'application/pdf');
+  }
+
+  async function downloadChart(format) {
+    const dl = await import('./lib/download');
+    const xName = chartX === 'tanggal' ? 'Tanggal' : columns.find((c) => c.id === chartX)?.name || chartX;
+    const headers = [xName, ...chartY.map((id) => columns.find((c) => c.id === id)?.name || id)];
+    const rows = chartData.map((p) => [p.x, ...chartY.map((id) => (p[id] === null || p[id] === undefined ? '' : p[id]))]);
+    const name = `logitrack-grafik-${dl.stamp()}`;
+    const sub = `Filter: ${activeFilterSummary()} · X: ${xName} · Y: ${chartY.map((id) => columns.find((c) => c.id === id)?.name || id).join(', ') || '—'}`;
+    if (format === 'csv') dl.downloadFile(`${name}.csv`, dl.buildCSV(headers, rows), 'text/csv;charset=utf-8');
+    else if (format === 'xlsx') dl.downloadFile(`${name}.xlsx`, dl.buildExcel(headers, rows, 'Grafik'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    else {
+      const img = await captureChartImage();
+      dl.downloadFile(`${name}.pdf`, dl.buildPDF('LogiTrack — Grafik', sub, headers, rows, img), 'application/pdf');
+    }
+  }
+
+  async function downloadPrediction(format) {
+    if (!result || predColIds.length === 0) return;
+    const dl = await import('./lib/download');
+    const headers = ['Tanggal'];
+    for (const id of predColIds) {
+      const nm = columns.find((c) => c.id === id)?.name || id;
+      headers.push(nm, `${nm} (q10)`, `${nm} (q90)`);
+    }
+    const rows = result.columns[predColIds[0]].dates.map((iso, i) => {
+      const r = [fmtDate(iso)];
+      for (const id of predColIds) {
+        r.push(result.columns[id].values[i] ?? '', result.columns[id].q10?.[i] ?? '', result.columns[id].q90?.[i] ?? '');
+      }
+      return r;
+    });
+    const name = `logitrack-prediksi-${dl.stamp()}`;
+    const filt = result.meta?.filters && Object.keys(result.meta.filters).length > 0
+      ? Object.entries(result.meta.filters).map(([k, v]) => fmtFilter(k, v)).join(' · ')
+      : 'Semua data (tanpa filter)';
+    const sub = `Filter: ${filt} · ${result.meta?.rows_used ?? ''} baris dipakai · Horizon ${result.horizon} · Diprediksi ${result.at ? fmtDate(result.at) : ''}`;
+    if (format === 'csv') dl.downloadFile(`${name}.csv`, dl.buildCSV(headers, rows), 'text/csv;charset=utf-8');
+    else if (format === 'xlsx') dl.downloadFile(`${name}.xlsx`, dl.buildExcel(headers, rows, 'Prediksi'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    else {
+      const img = await captureChartImage();
+      dl.downloadFile(`${name}.pdf`, dl.buildPDF('LogiTrack — Hasil Prediksi', sub, headers, rows, img), 'application/pdf');
+    }
   }
 
   if (!authChecked) {
@@ -876,8 +1023,9 @@ export default function Home() {
                   <form onSubmit={saveEdit} className="card" style={{ background: '#f7f9fb', marginBottom: 14 }}>
                     <h2 style={{ fontSize: 16 }}>Edit Baris</h2>
                     <div className="row">
-                      {columns.map((c) => rowField(c, editingRow.values, (updater) => setEditingRow((prev) => ({ ...prev, values: typeof updater === 'function' ? updater(prev.values) : updater }))))}
+                      {columns.map((c) => rowField(c, editingRow.values, (updater) => setEditingRow((prev) => ({ ...prev, values: typeof updater === 'function' ? updater(prev.values) : updater })), 'edit'))}
                     </div>
+                    {autofillNote && <p className="msg">{autofillNote}</p>}
                     <div className="row" style={{ marginTop: 12 }}>
                       <button type="submit" className="primary" disabled={editBusy}>{editBusy ? 'Menyimpan…' : 'Simpan perubahan'}</button>
                       <button type="button" className="ghost" onClick={() => setEditingRow(null)}>Batal</button>
@@ -893,6 +1041,7 @@ export default function Home() {
                     <table>
                       <thead>
                         <tr>
+                          <th style={{ width: 44 }}>No</th>
                           {columns.map((c) => (
                             <th key={c.id} className={isNumeric(c) ? 'num' : ''}>
                               {c.name} <span style={{ fontWeight: 400 }}>({c.type}{c.type === 'rumus' ? ` = ${c.formula}` : ''})</span>
@@ -912,8 +1061,9 @@ export default function Home() {
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedFilteredRows.map((r) => (
+                        {sortedFilteredRows.map((r, i) => (
                           <tr key={r.id}>
+                            <td className="num">{i + 1}</td>
                             {columns.map((c) => (
                               <td key={c.id} className={isNumeric(c) ? 'num' : ''}>{cellValue(c, r)}</td>
                             ))}
@@ -932,6 +1082,12 @@ export default function Home() {
                 <div style={{ marginTop: 12 }} className="row">
                   <button className="ghost" onClick={loadData}>Muat ulang</button>
                   <span className="legend">Menampilkan {sortedFilteredRows.length} dari {rows.length} baris (filter aktif dari menu Filter Data).</span>
+                </div>
+                <div style={{ marginTop: 12 }} className="row">
+                  <span className="legend">Unduh tabel (data yang tampil, termasuk filter):</span>
+                  <button className="ghost" onClick={() => downloadTable('csv')} disabled={sortedFilteredRows.length === 0}>CSV</button>
+                  <button className="ghost" onClick={() => downloadTable('xlsx')} disabled={sortedFilteredRows.length === 0}>Excel</button>
+                  <button className="ghost" onClick={() => downloadTable('pdf')} disabled={sortedFilteredRows.length === 0}>PDF</button>
                 </div>
                 {msg && <p className="msg">{msg}</p>}
               </div>
@@ -985,6 +1141,11 @@ export default function Home() {
                     Semua kolom
                   </button>
                 </div>
+                <p className="legend" style={{ marginTop: 10 }}>
+                  Grafik ini dari filter: <b>{activeFilterSummary()}</b>
+                  {chartY.length > 0 && <> · X: {chartX === 'tanggal' ? 'Tanggal' : columns.find((c) => c.id === chartX)?.name} · Y: {chartY.map((id) => columns.find((c) => c.id === id)?.name).join(', ')}</>}
+                  {' '}· {sortedFilteredRows.length} baris ditampilkan.
+                </p>
                 {chartData.length === 0 ? (
                   <p className="empty">Pilih minimal satu kolom Y untuk menampilkan grafik.</p>
                 ) : (
@@ -1012,6 +1173,14 @@ export default function Home() {
                   </div>
                 )}
                 {selectedBox('main')}
+                {chartData.length > 0 && (
+                  <div style={{ marginTop: 12 }} className="row">
+                    <span className="legend">Unduh data grafik:</span>
+                    <button className="ghost" onClick={() => downloadChart('csv')}>CSV</button>
+                    <button className="ghost" onClick={() => downloadChart('xlsx')}>Excel</button>
+                    <button className="ghost" onClick={() => downloadChart('pdf')}>PDF (dengan gambar grafik)</button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1052,6 +1221,9 @@ export default function Home() {
                     {predBusy ? 'Mengirim…' : 'Jalankan prediksi'}
                   </button>
                 </form>
+                <p className="legend" style={{ marginTop: 10 }}>
+                  Prediksi ini memakai filter: <b>{activeFilterSummary()}</b> · {filteredRows.length} baris tersedia untuk prediksi.
+                </p>
                 {predMsg && <p className="msg">{predMsg}</p>}
                 {job && job.status === 'error' && <p className="msg err">{job.error}</p>}
                 {result && predColIds.length === 0 && (
@@ -1105,8 +1277,14 @@ export default function Home() {
                     </div>
                     <p className="legend">Diprediksi {result.at ? `pada ${fmtDate(result.at)}` : ''} · {result.meta?.rows_used} baris dipakai{result.meta?.rows_total ? ` dari ${result.meta.rows_total}` : ''} · garis putus-putus = prediksi.</p>
                     {result.meta?.filters && Object.keys(result.meta.filters).length > 0 && (
-                      <p className="legend">Filter: {Object.entries(result.meta.filters).map(([k, v]) => fmtFilter(k, v)).join('; ')}</p>
+                      <p className="legend">Filter hasil prediksi ini: {Object.entries(result.meta.filters).map(([k, v]) => fmtFilter(k, v)).join('; ')}</p>
                     )}
+                    <div style={{ marginTop: 12 }} className="row">
+                      <span className="legend">Unduh hasil prediksi:</span>
+                      <button className="ghost" onClick={() => downloadPrediction('csv')}>CSV</button>
+                      <button className="ghost" onClick={() => downloadPrediction('xlsx')}>Excel</button>
+                      <button className="ghost" onClick={() => downloadPrediction('pdf')}>PDF (dengan gambar grafik)</button>
+                    </div>
                   </>
                 )}
               </div>
@@ -1115,11 +1293,12 @@ export default function Home() {
             {view === 'input' && isLogistik && (
               <div className="card">
                 <h2>Tambah Baris</h2>
-                <p className="sub">Tanggal defaultnya tanggal &amp; jam sekarang — bisa diubah. Klik Masukan, data langsung masuk ke tabel. Kolom rumus terisi otomatis dari rumusnya, tidak perlu diisi.</p>
+                <p className="sub">Tanggal defaultnya tanggal &amp; jam sekarang — bisa diubah. Klik Masukan, data langsung masuk ke tabel. Kolom rumus terisi otomatis dari rumusnya, tidak perlu diisi. Untuk kolom teks, pilih dari saran dropdown — input lain otomatis terisi dari baris terakhir dengan nilai teks itu.</p>
                 <form onSubmit={tambahRow} className="row">
-                  {columns.map((c) => rowField(c, rowForm, setRowForm))}
+                  {columns.map((c) => rowField(c, rowForm, setRowForm, 'add'))}
                   <button type="submit" className="primary" disabled={rowBusy}>{rowBusy ? 'Memasukkan…' : 'Masukan'}</button>
                 </form>
+                {autofillNote && <p className="msg">{autofillNote}</p>}
                 {msg && <p className="msg">{msg}</p>}
                 <div style={{ marginTop: 16 }}>
                   <button className="ghost" onClick={isiContoh} disabled={sampleBusy}>
