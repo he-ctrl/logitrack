@@ -76,6 +76,10 @@ button:disabled { opacity: 0.55; cursor: default; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 th { background: #f7f9fb; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+th.th-drag { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+th.th-dragging { opacity: .45; cursor: grabbing; }
+th.th-drop-before { box-shadow: inset 3px 0 0 var(--accent2); }
+th.th-drop-after { box-shadow: inset -3px 0 0 var(--accent2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr:hover td { background: #fafbfc; }
 .pill {
