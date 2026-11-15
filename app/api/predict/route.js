@@ -16,7 +16,7 @@ export async function POST(req) {
     for (const [k, v] of Object.entries(rawFilters)) {
       const col = schemaCols.find((c) => c.id === k);
       if (!col) continue;
-      if (col.type === 'string') {
+      if (col.type === 'string' || col.type === 'selection') {
         const val = String(v ?? '').trim();
         if (val) filters[k] = val;
       } else if (col.type === 'tanggal') {
