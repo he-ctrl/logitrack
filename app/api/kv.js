@@ -132,10 +132,11 @@ export async function saveAggregates(list) {
 // number|null untuk referensi [Nama Variabel] di dalam rumus (boleh null
 // bila rumus tidak memakai variabel). Kembalian:
 // { values: {..., [idRumus]: number|null}, errors: [{column, error}] }
-export function computeFormulas(columns, values, resolveVar) {
+export function computeFormulas(columns, values, resolveVar, varNames = []) {
   const out = { ...values };
   const errors = [];
   const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
+  const knownNames = [...columns.map((c) => c.name), ...varNames];
   for (const col of columns) {
     if (col.type !== 'rumus') continue;
     if (!col.formula) {
@@ -153,7 +154,7 @@ export function computeFormulas(columns, values, resolveVar) {
         return typeof v === 'number' && Number.isFinite(v) ? v : null;
       }
       return null;
-    });
+    }, knownNames);
     if (res.error) {
       out[col.id] = null;
       errors.push({ column: col.name, error: res.error });
@@ -185,7 +186,7 @@ export function recomputeAllRows(columns, rows, aggregates) {
   for (let iter = 0; iter < 4; iter++) {
     const vars = computeVariables(columns, rows.map((r, i) => ({ ...r, values: current[i] })), aggregates);
     const next = current.map((values) =>
-      computeFormulas(columns, values, (name) => vars.get(String(name).toLowerCase()) ?? null).values
+      computeFormulas(columns, values, (name) => vars.get(String(name).toLowerCase()) ?? null, aggregates.map((a) => a.name)).values
     );
     const same = JSON.stringify(next) === JSON.stringify(current);
     current = next;
