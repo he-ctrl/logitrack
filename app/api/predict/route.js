@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getData, getJob, saveJob, getResult } from '../kv';
+import { getData, getJob, saveJob, getResult, getSession } from '../kv';
 
 export async function POST(req) {
   try {
+    const sess = await getSession(req);
+    if (!sess) return NextResponse.json({ error: 'Silakan login dulu.' }, { status: 401 });
     const body = await req.json();
     const horizon = Math.max(1, Math.min(60, parseInt(body.horizon, 10) || 7));
     let columns = body.columns || 'all';
@@ -23,7 +25,7 @@ export async function POST(req) {
         if (v.from && !Number.isNaN(new Date(v.from).getTime())) o.from = new Date(v.from).toISOString();
         if (v.to && !Number.isNaN(new Date(v.to).getTime())) o.to = new Date(v.to).toISOString();
         if (Object.keys(o).length) filters[k] = o;
-      } else if (col.type === 'int' || col.type === 'double') {
+      } else if (col.type === 'int' || col.type === 'double' || col.type === 'rumus') {
         if (!v || typeof v !== 'object') continue;
         const o = {};
         if (v.min !== undefined && v.min !== null && v.min !== '' && Number.isFinite(Number(v.min))) o.min = Number(v.min);
@@ -31,7 +33,7 @@ export async function POST(req) {
         if (Object.keys(o).length) filters[k] = o;
       }
     }
-    const numericIds = schemaCols.filter((c) => c.type === 'int' || c.type === 'double').map((c) => c.id);
+    const numericIds = schemaCols.filter((c) => c.type === 'int' || c.type === 'double' || c.type === 'rumus').map((c) => c.id);
     if (columns !== 'all') {
       if (!Array.isArray(columns) || columns.length === 0) {
         return NextResponse.json({ error: 'Pilih minimal satu kolom angka.' }, { status: 400 });
@@ -66,6 +68,8 @@ export async function POST(req) {
 
 export async function GET(req) {
   try {
+    const sess = await getSession(req);
+    if (!sess) return NextResponse.json({ error: 'Silakan login dulu.' }, { status: 401 });
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
     const job = await getJob();
