@@ -19,6 +19,22 @@ async function kvGetRaw(key) {
   return j.result ?? null;
 }
 
+async function kvDeleteRaw(key) {
+  const res = await fetch(`${KV_URL}/del/${encodeURIComponent(key)}`, {
+    headers: { Authorization: `Bearer ${KV_TOKEN}` },
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`KV del ${key} gagal: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function clearPredictJob() {
+  const job = await getJob();
+  if (!job) return;
+  await kvDeleteRaw('logistik:predict:job');
+  await kvDeleteRaw(`logistik:predict:result:${job.id}`);
+}
+
 async function kvSetRaw(key, value) {
   const body = typeof value === 'string' ? value : JSON.stringify(value);
   const res = await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
