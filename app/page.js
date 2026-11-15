@@ -97,6 +97,22 @@ function ChartTooltip({ active, payload, label }) {
   );
 }
 
+// Rumus panjang dipotong pakai "…" — hover (title) menampilkan lengkapnya,
+// ketuk/klik juga bisa membuka-menutup lengkapnya (buat layar sentuh).
+function FormulaText({ text, max = 40 }) {
+  const [open, setOpen] = useState(false);
+  if (!text || text.length <= max) return <span>{text}</span>;
+  return (
+    <span
+      title={text}
+      onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+      style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+    >
+      {open ? text : `${text.slice(0, max)}…`}
+    </span>
+  );
+}
+
 export default function Home() {
   const [me, setMe] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -1298,7 +1314,7 @@ export default function Home() {
                           <th style={{ width: 44 }}>No</th>
                           {columns.map((c) => (
                             <th key={c.id} className={isNumeric(c) ? 'num' : ''}>
-                              {c.name} <span style={{ fontWeight: 400 }}>({c.type}{c.type === 'rumus' ? ` = ${c.formula}` : ''})</span>
+                              {c.name} <span style={{ fontWeight: 400 }}>({c.type}{c.type === 'rumus' ? <> = <FormulaText text={c.formula} /></> : ''})</span>
                               {isLogistik && c.type !== 'tanggal' && (
                                 <button
                                   className="danger"
@@ -1403,7 +1419,7 @@ export default function Home() {
                             return (
                               <tr key={a.id}>
                                 <td>{a.name}</td>
-                                <td><code>{a.formula}</code></td>
+                                <td><code><FormulaText text={a.formula} /></code></td>
                                 <td className="num">{res.error ? <span style={{ color: '#c0392b' }}>{res.error}</span> : <b>{fmtNum(Math.round(res.value * 100) / 100)}</b>}</td>
                                 <td><button className="danger" onClick={() => hapusAggregate(a.id)}>Hapus</button></td>
                               </tr>
