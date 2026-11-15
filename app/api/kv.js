@@ -3,6 +3,7 @@
 // KV_REST_API_TOKEN), tidak pernah dikirim ke browser.
 import crypto from 'node:crypto';
 import { evalFormula } from './formula';
+import { evalAggregate } from '../lib/aggregate';
 
 const KV_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_TOKEN = process.env.KV_REST_API_TOKEN || '';
@@ -106,12 +107,32 @@ export async function getResult(jobId) {
   return raw ? JSON.parse(raw) : null;
 }
 
+// ---- Rumus agregat tersimpan ----
+// logistik:aggregates = [{id, name, formula}] — rumus sum/avg/median/... atas
+// tabel (dihitung client-side dari baris yang tampil setelah filter).
+export async function getAggregates() {
+  const raw = await kvGetRaw('logistik:aggregates');
+  if (!raw) return [];
+  try {
+    const a = JSON.parse(raw);
+    return Array.isArray(a) ? a : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function saveAggregates(list) {
+  return kvSetRaw('logistik:aggregates', JSON.stringify(list));
+}
+
 // ---- Kolom rumus ----
 // Hitung semua kolom rumus (sesuai urutan skema — rumus hanya boleh memakai
 // kolom yang sudah ada, jadi urutan skema aman dari siklus).
-// values: nilai kolom biasa yang sudah dibersihkan. Kembalian:
+// values: nilai kolom biasa yang sudah dibersihkan. resolveVar(name) ->
+// number|null untuk referensi [Nama Variabel] di dalam rumus (boleh null
+// bila rumus tidak memakai variabel). Kembalian:
 // { values: {..., [idRumus]: number|null}, errors: [{column, error}] }
-export function computeFormulas(columns, values) {
+export function computeFormulas(columns, values, resolveVar) {
   const out = { ...values };
   const errors = [];
   const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
@@ -123,9 +144,15 @@ export function computeFormulas(columns, values) {
     }
     const res = evalFormula(col.formula, (name) => {
       const ref = byName.get(String(name).toLowerCase());
-      if (!ref) return null;
-      const v = out[ref.id];
-      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+      if (ref) {
+        const v = out[ref.id];
+        return typeof v === 'number' && Number.isFinite(v) ? v : null;
+      }
+      if (resolveVar) {
+        const v = resolveVar(name);
+        return typeof v === 'number' && Number.isFinite(v) ? v : null;
+      }
+      return null;
     });
     if (res.error) {
       out[col.id] = null;
@@ -135,6 +162,36 @@ export function computeFormulas(columns, values) {
     }
   }
   return { values: out, errors };
+}
+
+// ---- Variabel ----
+// Hitung semua variabel tersimpan atas baris yang diberikan.
+// Kembalian: Map nama-kecil -> number|null (null bila rumusnya error).
+export function computeVariables(columns, rows, aggregates) {
+  const vars = new Map();
+  const list = Array.isArray(aggregates) ? aggregates : [];
+  for (const a of list) {
+    const res = evalAggregate(a.formula, columns, rows, list);
+    vars.set(String(a.name).toLowerCase(), res.error ? null : res.value);
+  }
+  return vars;
+}
+
+// Hitung ulang SEMUA kolom rumus di SEMUA baris, dengan variabel tersedia.
+// Diulang sampai stabil (maks 4x) supaya rantai variabel <-> kolom rumus
+// yang saling bergantung ikut terhitung dengan benar.
+export function recomputeAllRows(columns, rows, aggregates) {
+  let current = rows.map((r) => ({ ...(r.values || {}) }));
+  for (let iter = 0; iter < 4; iter++) {
+    const vars = computeVariables(columns, rows.map((r, i) => ({ ...r, values: current[i] })), aggregates);
+    const next = current.map((values) =>
+      computeFormulas(columns, values, (name) => vars.get(String(name).toLowerCase()) ?? null).values
+    );
+    const same = JSON.stringify(next) === JSON.stringify(current);
+    current = next;
+    if (same) break;
+  }
+  return rows.map((r, i) => ({ ...r, values: current[i] }));
 }
 
 // ---- Login & role ----
