@@ -11,6 +11,11 @@
 // STOK (hanya kolom rumus per-baris): STOK([jumlah], [Jenis barang], [Status])
 // = stok berjalan per barang sampai baris ini (urut tanggal): in/masuk nambah,
 // out/keluar ngurangin, nilai arah lain diabaikan; tanpa kolom arah, semua nambah.
+// Agregat (hanya kolom rumus per-baris): sum/avg/count/min/max/median atas
+// SEMUA baris — sum([jumlah]) atau sum([jumlah][kondisi; kondisi]), kondisi
+// berbentuk nilai:Kolom; nilai boleh literal (in:Status) atau INI (= nilai
+// kolom itu di baris ini, mis. INI:Jenis barang). Perbandingan kondisi tanpa
+// peduli huruf besar/kecil dan spasi.
 // Referensi hanya boleh kolom angka (int / double / rumus).
 // Hasil harus angka berhingga; kalau tidak, evaluator mengembalikan error.
 
@@ -90,6 +95,7 @@ function tokenize(formula, names = []) {
         if (kw === 'or' || kw === 'atau') { tokens.push({ type: 'fn', value: 'or' }); i += word.length; continue; }
         if (kw === 'not' || kw === 'tidak') { tokens.push({ type: 'fn', value: 'not' }); i += word.length; continue; }
         if (kw === 'stok') { tokens.push({ type: 'fn', value: 'stok' }); i += word.length; continue; }
+        if (kw === 'sum' || kw === 'avg' || kw === 'average' || kw === 'median' || kw === 'count' || kw === 'min' || kw === 'max') { tokens.push({ type: 'fn', value: kw === 'average' ? 'avg' : kw }); i += word.length; continue; }
       }
       const known = matchKnownName(i);
       if (known) {
@@ -127,6 +133,22 @@ function parseTokens(tokens, resolve, opts = {}) {
   function expectOp(value, msg) {
     const t = next();
     if (!t || t.type !== 'op' || t.value !== value) throw new Error(msg);
+  }
+  // "nilai:Kolom; nilai:Kolom" di dalam sum/avg/... — nilai boleh literal
+  // (in:Status) atau INI (= nilai kolom itu di baris ini).
+  function parseConds(raw) {
+    const conds = [];
+    for (const part of String(raw).split(';')) {
+      const p = part.trim();
+      if (!p) continue;
+      const ci = p.indexOf(':');
+      if (ci === -1) throw new Error(`Kondisi "${p}" harus berbentuk nilai:Kolom, mis. INI:Jenis barang atau in:Status.`);
+      const value = p.slice(0, ci).trim();
+      const column = p.slice(ci + 1).trim();
+      if (!value || !column) throw new Error(`Kondisi "${p}" harus berbentuk nilai:Kolom, mis. INI:Jenis barang atau in:Status.`);
+      conds.push({ value, column });
+    }
+    return conds;
   }
 
   // Perbandingan — level terendah, di atas parseExpr.
@@ -243,6 +265,27 @@ function parseTokens(tokens, resolve, opts = {}) {
         }
         return v;
       }
+      if (kw === 'sum' || kw === 'avg' || kw === 'median' || kw === 'count' || kw === 'min' || kw === 'max') {
+        // sum([Kolom]) atau sum([Kolom][kondisi; kondisi]) — agregat atas
+        // SEMUA baris; kondisi INI memakai nilai kolom baris ini.
+        const qtyTok = next();
+        if (!qtyTok || qtyTok.type !== 'ref') throw new Error(`${kw.toUpperCase()} butuh nama kolom, mis. sum([jumlah]) atau sum([jumlah][INI:Jenis barang; in:Status]).`);
+        let conds = [];
+        const maybe = peek();
+        if (maybe && maybe.type === 'ref' && maybe.value.includes(':')) {
+          next();
+          conds = parseConds(maybe.value);
+        }
+        expectOp(')', `${kw.toUpperCase()} harus ditutup dengan ).`);
+        if (!opts || typeof opts.aggregate !== 'function') {
+          throw new Error(`${kw.toUpperCase()} hanya bisa dihitung dari data tabel (saat menyimpan baris).`);
+        }
+        const v = opts.aggregate(kw, qtyTok.value, conds);
+        if (v === null || v === undefined || typeof v !== 'number' || !Number.isFinite(v)) {
+          throw new Error(`${kw.toUpperCase()} tidak bisa dihitung (kolom tidak ditemukan atau tidak ada baris yang cocok).`);
+        }
+        return v;
+      }
       if (kw === 'if') {
         const cond = parseComparison();
         expectOp(',', 'IF butuh 3 bagian dipisah koma: IF(kondisi, jika benar, jika salah).');
@@ -346,11 +389,33 @@ export function validateFormula(formula, columns, variables = []) {
       const n = callArgs.filter((a) => a !== undefined).length;
       if (n < 2 || n > 3) return { refs: [], error: 'STOK butuh 2 atau 3 bagian: STOK([jumlah], [Jenis barang], [Status]).' };
     }
+    // Blok kondisi sum/avg/...: token ref berisi ':' tepat setelah ref jumlah
+    // di dalam panggilan sum/avg/count/min/max/median — validasi kolom
+    // kondisinya secara terpisah, bukan sebagai kolom angka.
+    const AGG = new Set(['sum', 'avg', 'median', 'count', 'min', 'max']);
+    const condBlockPos = new Set();
+    for (let k = 3; k < tokens.length; k++) {
+      if (tokens[k].type === 'ref' && tokens[k].value.includes(':')
+        && tokens[k - 1]?.type === 'ref'
+        && tokens[k - 2]?.type === 'op' && tokens[k - 2].value === '('
+        && tokens[k - 3]?.type === 'fn' && AGG.has(tokens[k - 3].value)) {
+        condBlockPos.add(k);
+        for (const part of tokens[k].value.split(';')) {
+          const p = part.trim();
+          if (!p) continue;
+          const ci = p.indexOf(':');
+          if (ci === -1) return { refs: [], error: `Kondisi "${p}" harus berbentuk nilai:Kolom, mis. INI:Jenis barang atau in:Status.` };
+          const colName = p.slice(ci + 1).trim();
+          const col = byName.get(colName.toLowerCase());
+          if (!col) return { refs: [], error: `"${colName}" tidak ditemukan — bukan kolom maupun variabel. Cek lagi namanya.` };
+        }
+      }
+    }
     const refs = [];
     let hasVar = false;
     for (let ti = 0; ti < tokens.length; ti++) {
       const t = tokens[ti];
-      if (t.type !== 'ref') continue;
+      if (t.type !== 'ref' || condBlockPos.has(ti)) continue;
       const col = byName.get(t.value.toLowerCase());
       if (stokArgPos.has(ti)) {
         // Argumen STOK: boleh kolom teks (barang/arah), bukan hanya angka.
@@ -385,7 +450,7 @@ export function validateFormula(formula, columns, variables = []) {
     }
     if (refs.length === 0 && !hasVar) return { refs: [], error: 'Rumus harus memakai minimal satu kolom atau variabel, contoh: [Harga] * [Jumlah Barang].' };
     // Uji hitung dengan nilai dummy 1 untuk menangkap kesalahan sintaks.
-    const trial = evalFormula(formula, () => 1, names, { running: () => 1 });
+    const trial = evalFormula(formula, () => 1, names, { running: () => 1, aggregate: () => 1 });
     if (trial.error) return { refs: [], error: trial.error };
     return { refs, error: null };
   } catch (e) {
@@ -398,11 +463,25 @@ export function formulaRefIds(formula, columns) {
   const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]));
   const ids = [];
   try {
-    for (const t of tokenize(String(formula || ''), columns.map((c) => c.name))) {
-      if (t.type === 'ref') {
-        const col = byName.get(t.value.toLowerCase());
-        if (col && !ids.includes(col.id)) ids.push(col.id);
+    const tokens = tokenize(String(formula || ''), columns.map((c) => c.name));
+    const AGG = new Set(['sum', 'avg', 'median', 'count', 'min', 'max']);
+    for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.type !== 'ref') continue;
+      // Blok kondisi sum/avg/... — daftarkan kolom-kolom kondisinya.
+      if (t.value.includes(':') && tokens[k - 1]?.type === 'ref' && tokens[k - 2]?.type === 'op' && tokens[k - 2].value === '(' && tokens[k - 3]?.type === 'fn' && AGG.has(tokens[k - 3].value)) {
+        for (const part of t.value.split(';')) {
+          const p = part.trim();
+          if (!p) continue;
+          const ci = p.indexOf(':');
+          if (ci === -1) continue;
+          const col = byName.get(p.slice(ci + 1).trim().toLowerCase());
+          if (col && !ids.includes(col.id)) ids.push(col.id);
+        }
+        continue;
       }
+      const col = byName.get(t.value.toLowerCase());
+      if (col && !ids.includes(col.id)) ids.push(col.id);
     }
   } catch (e) { /* abaikan — validasi dilakukan di tempat lain */ }
   return ids;
