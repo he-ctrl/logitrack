@@ -7,6 +7,30 @@ export async function POST(req) {
     const horizon = Math.max(1, Math.min(60, parseInt(body.horizon, 10) || 7));
     let columns = body.columns || 'all';
     const { columns: schemaCols } = await getData();
+    // Filter: string = cocok persis, tanggal = rentang tanggal (from/to ISO),
+    // int/double = rentang angka (min/max). Hanya yang valid diteruskan ke worker.
+    const rawFilters = body.filters && typeof body.filters === 'object' && !Array.isArray(body.filters) ? body.filters : {};
+    const filters = {};
+    for (const [k, v] of Object.entries(rawFilters)) {
+      const col = schemaCols.find((c) => c.id === k);
+      if (!col) continue;
+      if (col.type === 'string') {
+        const val = String(v ?? '').trim();
+        if (val) filters[k] = val;
+      } else if (col.type === 'tanggal') {
+        if (!v || typeof v !== 'object') continue;
+        const o = {};
+        if (v.from && !Number.isNaN(new Date(v.from).getTime())) o.from = new Date(v.from).toISOString();
+        if (v.to && !Number.isNaN(new Date(v.to).getTime())) o.to = new Date(v.to).toISOString();
+        if (Object.keys(o).length) filters[k] = o;
+      } else if (col.type === 'int' || col.type === 'double') {
+        if (!v || typeof v !== 'object') continue;
+        const o = {};
+        if (v.min !== undefined && v.min !== null && v.min !== '' && Number.isFinite(Number(v.min))) o.min = Number(v.min);
+        if (v.max !== undefined && v.max !== null && v.max !== '' && Number.isFinite(Number(v.max))) o.max = Number(v.max);
+        if (Object.keys(o).length) filters[k] = o;
+      }
+    }
     const numericIds = schemaCols.filter((c) => c.type === 'int' || c.type === 'double').map((c) => c.id);
     if (columns !== 'all') {
       if (!Array.isArray(columns) || columns.length === 0) {
@@ -28,6 +52,7 @@ export async function POST(req) {
       id: `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       columns,
       horizon,
+      filters,
       status: 'pending',
       created_at: new Date().toISOString(),
       error: null,
