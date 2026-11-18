@@ -16,7 +16,7 @@ import { evalAggregate } from './lib/aggregate';
 import { evalFormula } from './lib/formula';
 import { reorderColumns } from './lib/columns';
 
-const COLORS = ['#2e86c1', '#f5a623', '#1e8449', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#2c3e50'];
+const COLORS = ['#007aff', '#34c759', '#ff9500', '#af52de', '#ff3b30', '#5ac8fa', '#ffcc00', '#8e8e93'];
 
 const VIEWS = [
   { id: 'ringkasan', label: 'Ringkasan', roles: ['logistik', 'supervisor'] },
@@ -89,7 +89,7 @@ function ChartTooltip({ active, payload, label }) {
   if (!active || !payload || payload.length === 0) return null;
   const full = payload[0]?.payload?.full;
   return (
-    <div style={{ background: '#fff', border: '1px solid #dde4ea', borderRadius: 8, padding: '8px 10px', fontSize: 13, boxShadow: '0 1px 4px rgba(15,42,67,0.15)' }}>
+    <div className="chart-tooltip">
       <div style={{ fontWeight: 700, marginBottom: 4 }}>{full ? fmtDate(full) : label}</div>
       {payload.filter((p) => p.value !== undefined && p.value !== null).map((p) => (
         <div key={String(p.dataKey)}><span style={{ color: p.color || p.stroke }}>●</span> {p.name}: {fmtNum(p.value)}</div>
@@ -889,7 +889,7 @@ export default function Home() {
   function selectedBox(chart) {
     if (!selected || selected.chart !== chart) return null;
     return (
-      <div className="msg" style={{ background: '#eaf3fb', borderRadius: 8, padding: '10px 12px' }}>
+      <div className="msg selected-box">
         <strong>{selected.title}</strong>
         {selected.lines.map((l) => (
           <div key={l.name}>{l.name}: {fmtNum(l.value)}</div>
@@ -1287,9 +1287,6 @@ export default function Home() {
               </button>
             </form>
             {loginErr && <p className="msg err">{loginErr}</p>}
-            <p className="legend" style={{ marginTop: 14 }}>
-              Akun awal — logistik / logistik123 · supervisor / supervisor123. Segera ganti password setelah masuk (menu Ringkasan → Ganti Password).
-            </p>
           </div>
         </main>
       </>
@@ -1366,7 +1363,7 @@ export default function Home() {
                     : 'Mode baca saja untuk supervisor — tabel ini tidak bisa diubah.'}
                 </p>
                 {editingRow && (
-                  <form onSubmit={saveEdit} className="card" style={{ background: '#f7f9fb', marginBottom: 14 }}>
+                  <form onSubmit={saveEdit} className="card card-soft" style={{ marginBottom: 14 }}>
                     <h2 style={{ fontSize: 16 }}>Edit Baris</h2>
                     <div className="row">
                       {columns.map((c) => rowField(c, editingRow.values, (updater) => setEditingRow((prev) => ({ ...prev, values: typeof updater === 'function' ? updater(prev.values) : updater })), 'edit'))}
@@ -1445,7 +1442,7 @@ export default function Home() {
                   <button className="ghost" onClick={() => downloadTable('xlsx')} disabled={sortedFilteredRows.length === 0}>Excel</button>
                   <button className="ghost" onClick={() => downloadTable('pdf')} disabled={sortedFilteredRows.length === 0}>PDF</button>
                 </div>
-                <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
+                <div className="card card-soft" style={{ marginTop: 14 }}>
                   <h2 style={{ fontSize: 16 }}>Variabel</h2>
                   <p className="sub">Variabel dihitung dari <b>baris yang tampil di tabel</b> — kalau tabel difilter, nilainya ikut berubah. Cocok untuk stok gudang: mis. <b>Stok Bawang = [Bawang In] - [Bawang Out]</b>. Variabel bisa dipakai di rumus variabel lain dan di kolom rumus per-baris dengan <b>[Nama Variabel]</b>. Template kondisi: <b>Kolom[nilai:Kolom]</b> — mis. <b>sum([jumlah][Bawang merah:Jenis barang; in:Arus])</b>. Nama variabel/kolom boleh diketik langsung tanpa [ ], mis. ketik <b>Wortel stok</b> saja — atau ketuk tag di bawah. Ada <b>IF</b>: <b>IF([Stok Bawang] &gt; 10, [Stok Bawang], 0)</b> — IF di variabel menghitung dari semua baris yang tampil, bisa bersarang, plus AND/OR/NOT.</p>
                   <form onSubmit={simpanAggregate} className="row">
@@ -1535,7 +1532,7 @@ export default function Home() {
                   <button className="ghost" onClick={() => setFilters({})} disabled={Object.keys(filters).length === 0}>Reset filter</button>
                   <span className="legend">Menampilkan {filteredRows.length} dari {rows.length} baris.</span>
                 </div>
-                <div className="card" style={{ marginTop: 14, background: '#f7f9fb' }}>
+                <div className="card card-soft" style={{ marginTop: 14 }}>
                   <h2 style={{ fontSize: 16 }}>Jadikan Variabel</h2>
                   <p className="sub">Simpan filter yang sedang aktif sebagai variabel stok — mis. filter Jenis barang = Bawang merah + Arus = in, kolom jumlah, sum → variabel &quot;Bawang In&quot;. Nilai variabel dihitung dari baris yang tampil di tabel, jadi ikut berubah kalau filternya diubah nanti. Variabel bisa dipakai di rumus lain dengan [Nama Variabel].</p>
                   <form onSubmit={simpanVariabelDariFilter} className="row">
@@ -1612,9 +1609,9 @@ export default function Home() {
                   <div style={{ height: 320, marginTop: 12 }}>
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'main')}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="x" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="x" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
                         <Tooltip content={<ChartTooltip />} />
                         <Legend />
                         {chartY.map((id, i) => (
@@ -1624,7 +1621,7 @@ export default function Home() {
                             dataKey={id}
                             name={columns.find((c) => c.id === id)?.name || id}
                             stroke={COLORS[i % COLORS.length]}
-                            strokeWidth={2}
+                            strokeWidth={2.5}
                             dot={false}
                           />
                         ))}
@@ -1698,16 +1695,16 @@ export default function Home() {
                     <div style={{ height: 320, marginTop: 12 }}>
                       <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={forecastChart} margin={{ top: 8, right: 16, bottom: 8, left: 8 }} onClick={(s) => handlePointClick(s, 'forecast')}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="t" tick={{ fontSize: 12 }} />
-                          <YAxis tick={{ fontSize: 12 }} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="t" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
                           <Tooltip content={<ChartTooltip />} />
                           <Legend />
                           {predColIds.map((id, i) => (
-                            <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                            <Line key={id} type="monotone" dataKey={id} name={`${columns.find((c) => c.id === id)?.name || id} (aktual)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2.5} dot={false} connectNulls={false} />
                           ))}
                           {predColIds.map((id, i) => (
-                            <Line key={`${id}_pred`} type="monotone" dataKey={`${id}_pred`} name={`${columns.find((c) => c.id === id)?.name || id} (prediksi)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />
+                            <Line key={`${id}_pred`} type="monotone" dataKey={`${id}_pred`} name={`${columns.find((c) => c.id === id)?.name || id} (prediksi)`} stroke={COLORS[i % COLORS.length]} strokeWidth={2.5} strokeDasharray="6 4" dot={false} connectNulls />
                           ))}
                         </LineChart>
                       </ResponsiveContainer>
