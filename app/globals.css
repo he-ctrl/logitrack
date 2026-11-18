@@ -1,12 +1,19 @@
-/* LogiTrack — Apple-style design tokens
+/* LogiTrack — Apple-style design tokens, v2 (floating Liquid Glass)
    Grounded in Apple's Human Interface Guidelines via dickwu/apple-design-skill:
    color.md (semantic system colors, one color = one meaning),
-   typography.md (SF Pro text styles), layout.md (hierarchy, 8pt grid),
-   materials.md + liquid-glass.md (glass ONLY on the floating navbar),
+   typography.md (SF Pro text styles),
+   layout.md (hierarchy; important controls mid-screen or lower on phones),
+   materials.md + liquid-glass.md (glass ONLY on the floating functional
+   layer; regular variant blur 20-40px, fill 60-80%, saturate 1.2-1.5x,
+   1px translucent border, scroll edge effect, content scrolls beneath),
    dark-mode.md (no app-specific toggle — follows prefers-color-scheme),
    lists-and-tables.md (title-style headings, alternating rows),
    buttons.md (one prominent action per view, press states),
-   accessibility.md (4.5:1 text contrast, visible keyboard focus). */
+   accessibility.md (4.5:1 text contrast, visible keyboard focus).
+   v2 fixes: the navbar is a FLOATING glass pill (fixed, content scrolls
+   underneath from the first pixel) over a soft gradient backdrop, so the
+   frost is visible immediately — a sticky bar on a flat background can
+   never read as glass. */
 
 :root {
   color-scheme: light dark;
@@ -41,13 +48,16 @@
   --orange-text: #b25e00;
   --orange-fill: rgba(255, 149, 0, 0.14);
 
-  /* Floating functional layer (Liquid Glass) */
-  --nav-glass: rgba(255, 255, 255, 0.72);
+  /* Floating Liquid Glass (regular variant) */
+  --nav-glass: rgba(255, 255, 255, 0.65);
+  --nav-border: rgba(255, 255, 255, 0.55);
+  --nav-highlight: rgba(255, 255, 255, 0.55);
+  --nav-shadow: 0 8px 28px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.08);
   --segment-selected: #ffffff;
 
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.12);
-  --radius-card: 16px;
+  --radius-card: 20px;
   --radius-control: 10px;
 }
 
@@ -74,7 +84,10 @@
     --red-fill: rgba(255, 69, 58, 0.16);
     --orange-text: #ff9f0a;
     --orange-fill: rgba(255, 159, 10, 0.16);
-    --nav-glass: rgba(28, 28, 30, 0.72);
+    --nav-glass: rgba(28, 28, 30, 0.6);
+    --nav-border: rgba(255, 255, 255, 0.14);
+    --nav-highlight: rgba(255, 255, 255, 0.14);
+    --nav-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
     --segment-selected: #636366;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
@@ -90,18 +103,37 @@ body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  background: var(--bg);
+  /* Soft gradient mesh behind the content: the glass pill needs something
+     to refract. Kept faint so data contrast never suffers; cards stay
+     opaque white, so text is unaffected. */
+  background:
+    radial-gradient(1100px 480px at 85% -10%, rgba(0, 122, 255, 0.1), transparent 60%),
+    radial-gradient(900px 420px at 8% 0%, rgba(175, 82, 222, 0.07), transparent 60%),
+    radial-gradient(1000px 600px at 50% 110%, rgba(52, 199, 89, 0.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--label);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      radial-gradient(1100px 480px at 85% -10%, rgba(10, 132, 255, 0.16), transparent 60%),
+      radial-gradient(900px 420px at 8% 0%, rgba(175, 82, 222, 0.12), transparent 60%),
+      radial-gradient(1000px 600px at 50% 110%, rgba(48, 209, 88, 0.08), transparent 60%),
+      var(--bg);
+    background-attachment: fixed;
+  }
 }
 
 a { color: var(--accent-text); }
 
-/* Large title (typography.md: Large Title 34pt, Bold) over the page
-   background — no colored banner. */
+/* Large title (typography.md: Large Title 34pt, Bold). The top padding
+   clears the floating glass pill so the title never hides under it. */
 header.topbar {
   background: transparent;
   color: var(--label);
-  padding: 28px 24px 8px;
+  padding: 96px 24px 8px;
   max-width: 1200px;
   margin: 0 auto;
 }
@@ -216,23 +248,32 @@ tbody tr:hover td { background: rgba(120, 120, 128, 0.08); }
 .empty { color: var(--label-secondary); font-size: 15px; padding: 12px 0; }
 footer { text-align: center; color: var(--label-secondary); font-size: 12px; padding: 16px 0 32px; }
 
-/* Floating functional layer (liquid-glass.md): glass ONLY here — never on
-   content cards. Regular variant: blur + saturation + translucent fill. */
+/* FLOATING Liquid Glass navbar (liquid-glass.md, materials.md).
+   Fixed pill, not a full-width sticky bar: content — including the large
+   title — scrolls underneath it from the first pixel, so the frost,
+   saturation boost and edge highlight are visible immediately. Glass lives
+   ONLY here; cards and content stay opaque. */
 nav.navbar {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  max-width: 1168px;
+  margin: 0 auto;
+  z-index: 10;
   background: var(--nav-glass);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
-  backdrop-filter: blur(20px) saturate(1.5);
-  border-bottom: 1px solid var(--separator);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  backdrop-filter: blur(28px) saturate(1.5);
+  border: 1px solid var(--nav-border);
+  border-radius: 20px;
+  box-shadow: inset 0 1px 0 var(--nav-highlight), var(--nav-shadow);
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 8px 16px;
+  padding: 8px 12px;
   align-items: center;
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
-/* Segmented-control style: quiet segments, selected one lifts off the track. */
+/* Segmented-control style: quiet segments, selected one lifts off the glass. */
 nav.navbar button {
   background: transparent;
   color: var(--label-secondary);
@@ -301,11 +342,30 @@ nav.navbar .who b { color: var(--label); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Phones (layout.md): important controls sit mid-screen or lower — the
+   navigation becomes a floating bottom tab bar, thumb-reachable. */
 @media (max-width: 640px) {
   header.topbar { padding: 20px 16px 4px; }
   header.topbar h1 { font-size: 28px; }
-  main { padding: 12px 12px 48px; }
+  main { padding: 12px 12px 120px; }
+  footer { padding-bottom: 120px; }
   .card { padding: 16px; }
   .field { min-width: 130px; }
   .loginwrap { margin-top: 32px; }
+  nav.navbar {
+    top: auto;
+    bottom: 12px;
+    left: 12px;
+    right: 12px;
+    max-width: none;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-radius: 24px;
+    padding: 8px 10px;
+  }
+  nav.navbar::-webkit-scrollbar { display: none; }
+  nav.navbar button { flex-shrink: 0; }
+  nav.navbar .spacer, nav.navbar .who { display: none; }
 }
